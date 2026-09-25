@@ -59,12 +59,16 @@ def cmd_backtest(args) -> None:
         print(bt.monthly_table(trades).to_string())
         for title, table in bt.breakdown(trades).items():
             print(f"\n{title}:\n{table.to_string()}")
+        if STRATEGIES[args.strategy].ablations:
+            print("\n¿Qué regla aporta? (cada fila apaga una regla):")
+            print(bt.ablation(contexts, args.strategy, params, args.cost_r).to_string())
         bt.trades_frame(trades).to_csv(out / f"trades_{args.strategy}.csv", index=False)
         print(f"\nTrades guardados en {out / f'trades_{args.strategy}.csv'}")
         return
 
     print("== Ranking de todas las combinaciones (todo el periodo) ==")
-    ranked = bt.optimize(contexts, cost_r=args.cost_r, min_trades=args.min_trades)
+    names = args.only.split(",") if args.only else None
+    ranked = bt.optimize(contexts, names, cost_r=args.cost_r, min_trades=args.min_trades)
     if ranked.empty:
         print("Ninguna combinación tuvo suficientes trades.")
         return
@@ -74,7 +78,7 @@ def cmd_backtest(args) -> None:
     ranked.to_csv(out / "ranking.csv", index=False)
 
     print("\n== Walk-forward: optimiza con el 70% inicial, prueba en el 30% final ==")
-    wf = bt.walk_forward(contexts, cost_r=args.cost_r, min_trades=args.min_trades)
+    wf = bt.walk_forward(contexts, cost_r=args.cost_r, min_trades=args.min_trades, names=names)
     print(wf.to_string() if not wf.empty else "Sin resultados.")
     wf.to_csv(out / "walk_forward.csv", index=False)
     print("\nCómo leerlo: una estrategia vale la pena si test_avg_r > 0 con suficientes trades y "
@@ -124,6 +128,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--demo-days", type=int, default=120)
     p.add_argument("--strategy", choices=list(STRATEGIES), help="Analizar una sola estrategia en detalle")
     p.add_argument("--params", help='Parámetros JSON, ej. \'{"range_minutes": 15, "target_r": 1.5}\'')
+    p.add_argument("--only", help="Comparar solo estas estrategias, ej. ema_vwap_rsi,orb")
     p.add_argument("--cost-r", type=float, default=0.1, help="Costo por trade en R (spread/slippage)")
     p.add_argument("--min-trades", type=int, default=15)
     p.add_argument("--top", type=int, default=15)

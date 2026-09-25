@@ -226,10 +226,26 @@ def breakdown(trades: list[Trade]) -> dict[str, pd.DataFrame]:
                        labels=["< -1%", "-1% a -0.3%", "plano", "0.3% a 1%", "> 1%"])
     df["weekday"] = pd.to_datetime(df["day"]).dt.day_name()
     df["side"] = df["direction"].map({1: "CALL", -1: "PUT"})
+    df["hour"] = df["entry_time"].map(lambda t: f"{t.hour:02d}:{0 if t.minute < 30 else 30:02d}")
 
     def agg(col: str) -> pd.DataFrame:
         g = df.groupby(col, observed=True)["r_net"]
         return pd.DataFrame({"trades": g.size(), "win_rate": g.apply(lambda s: (s > 0).mean()).round(2),
                              "avg_r": g.mean().round(3), "total_r": g.sum().round(2)})
 
-    return {"Por gap": agg("gap"), "Por día": agg("weekday"), "Por dirección": agg("side")}
+    return {"Por gap": agg("gap"), "Por día": agg("weekday"), "Por dirección": agg("side"),
+            "Por hora de entrada": agg("hour")}
+
+
+def ablation(contexts: list[DayContext], name: str, params: dict | None = None,
+             cost_r: float = 0.1) -> pd.DataFrame:
+    """Compara la estrategia completa contra versiones con una regla apagada.
+    Si quitar una regla NO empeora (o mejora) el resultado, esa regla no está aportando."""
+    base = dict(params or {})
+    variants = {"completa": {}, **STRATEGIES[name].ablations}
+    rows = []
+    for label, override in variants.items():
+        stats = summarize(run_strategy(contexts, name, {**base, **override}, cost_r))
+        rows.append({"variante": label, **{k: stats[k] for k in (
+            "trades", "win_rate", "avg_r", "total_r", "profit_factor", "pct_months_positive", "worst_month_r")}})
+    return pd.DataFrame(rows)

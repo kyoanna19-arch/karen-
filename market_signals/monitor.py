@@ -9,8 +9,6 @@ import time as systime
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import pandas as pd
-
 from .config import Settings
 from .options import choose_expiration, contracts_for_risk, pick_contract
 from .strategies import STRATEGIES, DayContext, Signal
@@ -40,14 +38,9 @@ def today_context(client: TradierClient, symbol: str, now: datetime) -> DayConte
 
 
 def live_signal(ctx: DayContext, strategy: str, params: dict) -> Signal | None:
-    """En vivo la señal puede estar en la última barra cerrada, así que añadimos una barra
-    'fantasma' para que la estrategia pueda evaluarla (en backtest se entra en la siguiente)."""
-    last_ts = ctx.bars.index[-1]
-    ghost = ctx.bars.iloc[[-1]].copy()
-    ghost.index = pd.DatetimeIndex([last_ts + pd.Timedelta(minutes=1)])
-    padded = DayContext(day=ctx.day, bars=pd.concat([ctx.bars, ghost]), premarket=ctx.premarket,
-                        prev_close=ctx.prev_close, prev_high=ctx.prev_high, prev_low=ctx.prev_low)
-    return STRATEGIES[strategy].fn(padded, **params)
+    """En vivo la señal puede estar en la última barra cerrada (en backtest se entra en la siguiente)."""
+    ctx.live = True
+    return STRATEGIES[strategy].fn(ctx, **params)
 
 
 def format_alert(symbol: str, strategy: str, ctx: DayContext, sig: Signal, contract: dict | None,

@@ -72,6 +72,28 @@ python -m market_signals backtest --data data/SPY_1min.csv --strategy orb --para
 | `premarket_break` | El precio cruza el máximo o mínimo del pre-market |
 | `vwap_cross` | Recupera o pierde el VWAP con las EMAs 9/20 a favor |
 | `gap_fade` | Apuesta a que el gap de apertura se rellena |
+| `ema_vwap_rsi` | **Tu estrategia**: EMA 9/21, vela sólida que rompe los promedios, VWAP girado, RSI 60/40 y volumen |
+
+### Tu estrategia traducida a reglas exactas
+
+**CALL** (PUT es el espejo, con RSI < 40):
+1. EMA 9 > EMA 21, y **las dos** subiendo respecto a la vela anterior.
+2. **Vela sólida:** el cuerpo mide al menos el 60% del rango de la vela (`body_min=0.6`), es verde, su mínimo toca la EMA 9 y **cierra arriba de las dos EMAs**.
+3. **Sobre el VWAP y VWAP girado:** el cierre está arriba del VWAP y el VWAP está más alto que hace 3 velas. La distancia al VWAP se limita con `max_vwap_dist_pct`; el backtest prueba 0.3% y "sin límite".
+4. **RSI(14) > 60.**
+5. **Volumen:** mayor que la vela anterior (`vol_mode=prev`) o mayor que las 4 anteriores (`max4`); el backtest prueba las dos.
+
+Lo que no estaba en tus reglas y el backtest decide: temporalidad de 1, 2 o 5 minutos, stop en el extremo de la vela de señal o en la EMA 21, objetivo de 1R, 1.5R o 2R, entradas entre 9:35 y 11:30 y salida por tiempo a las 12:00.
+
+```bash
+# Buscar la mejor versión de tu estrategia
+python -m market_signals backtest --data data/SPY_1min.csv --only ema_vwap_rsi
+
+# Detalle mes por mes + qué regla aporta y cuál sobra
+python -m market_signals backtest --data data/SPY_1min.csv --strategy ema_vwap_rsi --params '{"timeframe":2}'
+```
+
+La tabla **"¿Qué regla aporta?"** apaga una regla a la vez. Si al quitar una regla el resultado **mejora** o no cambia, esa regla no está sumando y solo te quita trades buenos. Si al quitarla **empeora**, es una regla importante.
 
 Cada una se prueba con varias combinaciones de parámetros. El filtro `with_gap` (operar solo a favor del gap) usa el sesgo del pre-market. Solo se toma **una señal por día** porque la regla PDT te limita.
 
