@@ -4,6 +4,7 @@ Comandos:
   premarket   Reporte antes de la apertura (sesgo del día y niveles)
   monitor     Vigila una estrategia en vivo y alerta la señal
   download    Descarga barras de 1 minuto de Tradier a data/
+  history     Descarga años de historial de 1 minuto desde Polygon.io
   backtest    Compara estrategias con datos históricos (mes por mes)
   telegram-test  Envía un mensaje de prueba a tu Telegram
 """
@@ -108,6 +109,21 @@ def cmd_download(args) -> None:
     print(f"Guardado en {path}")
 
 
+def cmd_history(args) -> None:
+    import os
+    from datetime import date, timedelta
+    from .config import load_dotenv
+    from .polygon import PolygonClient, download_history
+    load_dotenv()
+    end = date.fromisoformat(args.end) if args.end else date.today() - timedelta(days=1)
+    start = date.fromisoformat(args.start) if args.start else end - timedelta(days=int(args.years * 365))
+    client = PolygonClient(os.environ.get("POLYGON_API_KEY", ""), pause_seconds=args.pause)
+    for symbol in args.symbol.upper().split(","):
+        print(f"Descargando {symbol} de {start} a {end} (el plan gratuito tarda ~15 s por mes)...")
+        path = download_history(client, symbol, start, end)
+        print(f"Listo: {path}" if path else f"No se descargó nada de {symbol}.")
+
+
 def cmd_telegram_test(args) -> None:
     settings = load_settings()
     if not settings.telegram_enabled:
@@ -152,6 +168,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--symbol", default="SPY")
     p.add_argument("--days", type=int, default=20)
     p.set_defaults(func=cmd_download)
+
+    p = sub.add_parser("history", help="Descargar historial largo desde Polygon.io")
+    p.add_argument("--symbol", default="SPY", help="Uno o varios separados por coma, ej. SPY,QQQ")
+    p.add_argument("--years", type=float, default=2)
+    p.add_argument("--start", help="Fecha inicial YYYY-MM-DD (opcional)")
+    p.add_argument("--end", help="Fecha final YYYY-MM-DD (por defecto ayer)")
+    p.add_argument("--pause", type=float, default=12.5,
+                   help="Segundos entre consultas (12.5 para el plan gratuito, 0 si pagas)")
+    p.set_defaults(func=cmd_history)
 
     p = sub.add_parser("telegram-test", help="Probar Telegram")
     p.set_defaults(func=cmd_telegram_test)

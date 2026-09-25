@@ -35,12 +35,20 @@ def download_recent(client: TradierClient, symbol: str, days: int = 20, folder: 
                 print(f"  {d}: {len(bars)} barras")
         d += timedelta(days=1)
 
+    if not frames:
+        raise TradierError(f"No llegaron datos para {symbol}")
+    return merge_into_cache(frames, symbol, folder)
+
+
+def merge_into_cache(frames: list[pd.DataFrame], symbol: str, folder: str | Path = "data") -> Path:
+    """Junta barras nuevas con el archivo guardado (sin duplicados) y lo reescribe ordenado."""
     path = cache_path(symbol, folder)
     path.parent.mkdir(parents=True, exist_ok=True)
+    frames = [f for f in frames if not f.empty]
     if path.exists():
         frames.insert(0, load_bars_csv(path))
     if not frames:
-        raise TradierError(f"No llegaron datos para {symbol}")
+        raise ValueError(f"No hay barras para guardar de {symbol}")
     merged = pd.concat(frames)
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
     merged.to_csv(path, index_label="datetime")

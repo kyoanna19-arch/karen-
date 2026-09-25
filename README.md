@@ -45,7 +45,7 @@ cp .env.example .env             # luego edita .env con tus datos
 |---|---|---|
 | 9:00 | `python -m market_signals premarket --send` | Reporte con sesgo y niveles a Telegram |
 | 9:30 | `python -m market_signals monitor --symbol SPY --strategy orb --params '{"range_minutes":5,"target_r":1.5}' --send` | Vigila la estrategia hasta las 11:30 y te avisa |
-| Viernes | `python -m market_signals download --symbol SPY` | Guarda las barras de 1 minuto de la semana |
+| Viernes | `python -m market_signals history --symbol SPY,QQQ --years 0.1` | Agrega la semana al historial (Polygon) |
 
 En el monitor, usa la estrategia y los parámetros que **ganaron en el backtest**, no los del ejemplo.
 
@@ -122,10 +122,32 @@ Cada una se prueba con varias combinaciones de parámetros. El filtro `with_gap`
 
 ### Datos: el punto más importante
 
-Tradier solo guarda unas **semanas** de barras de 1 minuto. Para un backtest confiable necesitas **al menos 1 año**. Tienes dos opciones:
+Tradier solo guarda unas **semanas** de barras de 1 minuto. Para un backtest confiable necesitas **al menos 1 año**.
 
-1. **Gratis, pero lento:** corre `download` cada semana y el archivo va creciendo.
-2. **Rápido:** compra o descarga historial de 1 minuto de un proveedor (Polygon, Databento, FirstRate Data, etc.) y guárdalo como CSV con columnas `datetime,open,high,low,close,volume` en hora del Este, incluyendo el pre-market.
+#### Opción recomendada: Polygon.io (gratis, ~2 años)
+
+1. Crea una cuenta gratis en https://polygon.io. El plan **Basic** es gratuito y no pide tarjeta.
+2. En el panel, entra a **API Keys** y copia tu llave.
+3. Pégala en tu archivo `.env`:
+   ```
+   POLYGON_API_KEY=tu_llave_aqui
+   ```
+4. Descarga 2 años de SPY y QQQ:
+   ```bash
+   python -m market_signals history --symbol SPY,QQQ --years 2
+   ```
+   El plan gratis permite 5 consultas por minuto, así que tarda unos **6 minutos por símbolo**. Si se corta, vuelve a correrlo: no duplica datos.
+5. Corre el backtest:
+   ```bash
+   python -m market_signals backtest --data data/SPY_1min.csv --only ema_vwap_rsi
+   ```
+
+Si el plan gratis no alcanza para algunos meses antiguos, el comando los salta y sigue. Si más adelante quieres más años, un plan de pago de Polygon da 5+ años; usa `--years 5 --pause 0`.
+
+#### Otras opciones
+
+- `download` con Tradier cada semana: gratis, pero el historial crece lento.
+- Cualquier CSV con columnas `datetime,open,high,low,close,volume` en hora del Este, incluyendo el pre-market (FirstRate Data, Databento, etc.).
 
 ---
 
