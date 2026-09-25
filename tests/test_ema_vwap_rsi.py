@@ -35,9 +35,9 @@ def test_five_minute_candles_aggregate_correctly(contexts):
     assert not k["regular"][:j].any() and k["regular"][j:].all()
 
 
-@pytest.mark.parametrize("tf", [1, 2, 5])
+@pytest.mark.parametrize("tf", [1, 5, 15])
 def test_every_signal_satisfies_all_rules(contexts, tf):
-    params = dict(timeframe=tf, rsi_call=55, rsi_put=45)
+    params = dict(timeframe=tf, rsi_call=55, rsi_put=45, body_min=0.6 if tf < 15 else 0.4)
     found = 0
     for ctx in contexts:
         sig = ema_vwap_rsi(ctx, **params)
@@ -48,7 +48,7 @@ def test_every_signal_satisfies_all_rules(contexts, tf):
         j = int(np.where(k["end_pos"] == sig.pos)[0][-1])
         o, h, l, c, v = (k[x][j] for x in ("open", "high", "low", "close", "volume"))
         e9, e21, r, vw = k["ema9"], k["ema21"], k["rsi"][j], k["vwap"]
-        assert abs(c - o) / (h - l) >= 0.6                      # vela sólida
+        assert abs(c - o) / (h - l) >= params["body_min"]       # vela sólida
         assert v > k["volume"][j - 1]                           # volumen
         if sig.direction == 1:
             assert e9[j] > e21[j] and e9[j] > e9[j - 1] and e21[j] > e21[j - 1]
@@ -74,21 +74,53 @@ def test_live_ignores_incomplete_candle(contexts):
             assert partial.times[sig.pos].minute % 5 == 4  # termina en :x4 o :x9
 
 
-def test_signal_does_not_change_when_future_bars_are_added(contexts):
-    """La señal a las 10:00 debe ser la misma sin importar lo que pase después."""
-    for ctx in contexts[:40]:
-        full = ema_vwap_rsi(ctx, timeframe=2)
+@pytest.mark.parametrize("params", [{"timeframe": 1}, {"timeframe": 5},
+                                    {"timeframe": 1, "confirm_tf": 15}, {"timeframe": 5, "confirm_tf": 15}])
+def test_signal_does_not_change_when_future_bars_are_added(contexts, params):
+    """La señal debe ser la misma sin importar lo que pase después."""
+    checked = 0
+    for ctx in contexts[:60]:
+        full = ema_vwap_rsi(ctx, **params)
         if full is None:
             continue
         cut = full.pos + 2
         partial = DayContext(day=ctx.day, bars=ctx.bars.iloc[:cut], premarket=ctx.premarket,
                              prev_close=ctx.prev_close, prev_high=ctx.prev_high, prev_low=ctx.prev_low)
-        again = ema_vwap_rsi(partial, timeframe=2)
+        again = ema_vwap_rsi(partial, **params)
         assert again is not None and again.pos == full.pos and again.stop == pytest.approx(full.stop)
+        checked += 1
+    assert checked > 0
+
+
+def test_confirmation_uses_closed_higher_candle(contexts):
+    found = 0
+    for ctx in contexts:
+        sig = ema_vwap_rsi(ctx, timeframe=1, confirm_tf=15, rsi_call=55, rsi_put=45)
+        if sig is None:
+            continue
+        found += 1
+        big = candles(ctx, 15)
+        b = np.where(big["regular"] & (big["end_pos"] <= sig.pos))[0][-1]
+        assert big["end_pos"][b] <= sig.pos
+        if sig.direction == 1:
+            assert big["ema9"][b] > big["ema21"][b] and big["close"][b] > big["vwap"][b]
+        else:
+            assert big["ema9"][b] < big["ema21"][b] and big["close"][b] < big["vwap"][b]
+    assert found > 0
+
+
+def test_invalid_timeframe_combos_are_skipped():
+    from market_signals.strategies import STRATEGIES
+    spec = STRATEGIES["ema_vwap_rsi"]
+    combos = [p for p in bt.param_combinations(spec.grid) if spec.valid(p)]
+    pairs = {(p["timeframe"], p["confirm_tf"]) for p in combos}
+    assert pairs == {(1, 0), (1, 5), (1, 15), (5, 0), (5, 15), (15, 0)}
+    assert ema_vwap_rsi(bt.build_contexts(synthetic_bars(days=3))[0], timeframe=15, confirm_tf=5) is None
 
 
 def test_ablation_runs(contexts):
-    table = bt.ablation(contexts[:60], "ema_vwap_rsi", {"timeframe": 2})
-    assert table["variante"].iloc[0] == "completa" and "sin RSI" in set(table["variante"])
+    table = bt.ablation(contexts[:60], "ema_vwap_rsi", {"timeframe": 1, "confirm_tf": 5})
+    assert table["variante"].iloc[0] == "completa"
+    assert {"sin RSI", "sin confirmación mayor"} <= set(table["variante"])
     no_rsi = table.set_index("variante").loc["sin RSI", "trades"]
     assert no_rsi >= table.set_index("variante").loc["completa", "trades"]

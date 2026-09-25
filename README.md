@@ -83,17 +83,29 @@ python -m market_signals backtest --data data/SPY_1min.csv --strategy orb --para
 4. **RSI(14) > 60.**
 5. **Volumen:** mayor que la vela anterior (`vol_mode=prev`) o mayor que las 4 anteriores (`max4`); el backtest prueba las dos.
 
-Lo que no estaba en tus reglas y el backtest decide: temporalidad de 1, 2 o 5 minutos, stop en el extremo de la vela de señal o en la EMA 21, objetivo de 1R, 1.5R o 2R, entradas entre 9:35 y 11:30 y salida por tiempo a las 12:00.
+6. **Confirmación en temporalidad mayor (opcional, `confirm_tf`)**: en la última vela de 5 o 15 minutos **ya cerrada**, EMA 9 > EMA 21 y cierre sobre el VWAP. Es como mirar la gráfica de 15m para la tendencia y entrar en la de 1m o 5m.
+
+Combinaciones de temporalidad que se prueban (las mismas que usas en TC2000):
+
+| Entrada (`timeframe`) | Confirmación (`confirm_tf`) |
+|---|---|
+| 1 min | ninguna, 5 min o 15 min |
+| 5 min | ninguna o 15 min |
+| 15 min | ninguna |
+
+Lo que no estaba en tus reglas y el backtest decide: stop en el extremo de la vela de señal o en la EMA 21, objetivo de 1R, 1.5R o 2R, entradas entre 9:35 y 11:30 y salida por tiempo a las 12:00.
 
 ```bash
 # Buscar la mejor versión de tu estrategia
 python -m market_signals backtest --data data/SPY_1min.csv --only ema_vwap_rsi
 
 # Detalle mes por mes + qué regla aporta y cuál sobra
-python -m market_signals backtest --data data/SPY_1min.csv --strategy ema_vwap_rsi --params '{"timeframe":2}'
+python -m market_signals backtest --data data/SPY_1min.csv --strategy ema_vwap_rsi --params '{"timeframe":1,"confirm_tf":15}'
 ```
 
 La tabla **"¿Qué regla aporta?"** apaga una regla a la vez. Si al quitar una regla el resultado **mejora** o no cambia, esa regla no está sumando y solo te quita trades buenos. Si al quitarla **empeora**, es una regla importante.
+
+⚠️ **Cuidado con pocos trades.** Con velas de 15 minutos hay pocas señales por mes. Un resultado con 20–30 trades puede ser pura suerte. Confía solo en lo que se sostiene en el walk-forward y con 100+ trades.
 
 Cada una se prueba con varias combinaciones de parámetros. El filtro `with_gap` (operar solo a favor del gap) usa el sesgo del pre-market. Solo se toma **una señal por día** porque la regla PDT te limita.
 

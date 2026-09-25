@@ -183,7 +183,10 @@ def optimize(contexts: list[DayContext], names: list[str] | None = None, cost_r:
     """Prueba cada combinación de parámetros de cada estrategia y las ordena por calidad."""
     rows = []
     for name in names or list(STRATEGIES):
-        for params in param_combinations(STRATEGIES[name].grid):
+        spec = STRATEGIES[name]
+        for params in param_combinations(spec.grid):
+            if spec.valid is not None and not spec.valid(params):
+                continue
             stats = summarize(run_strategy(contexts, name, params, cost_r))
             if stats["trades"] >= min_trades:
                 rows.append({"strategy": name, "params": params, **stats})

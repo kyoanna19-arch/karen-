@@ -266,7 +266,8 @@ def candles(ctx: DayContext, minutes: int) -> dict[str, np.ndarray]:
 def ema_vwap_rsi(ctx: DayContext, timeframe: int = 5, target_r: float = 1.5, stop_mode: str = "candle",
                  body_min: float = 0.6, rsi_call: float = 60, rsi_put: float = 40, vol_mode: str = "prev",
                  vwap_slope_bars: int = 3, min_vwap_dist_pct: float = 0.0, max_vwap_dist_pct: float = 100.0,
-                 start: str = "09:35", last_entry: str = "11:30", exit_by: str = "12:00") -> Signal | None:
+                 confirm_tf: int = 0, start: str = "09:35", last_entry: str = "11:30",
+                 exit_by: str = "12:00") -> Signal | None:
     """Estrategia de Karen: EMA 9/21 + vela sólida que rompe los promedios + VWAP girado + RSI + volumen.
 
     CALL (PUT es el espejo):
@@ -276,10 +277,15 @@ def ema_vwap_rsi(ctx: DayContext, timeframe: int = 5, target_r: float = 1.5, sto
          distancia al VWAP entre min_vwap_dist_pct y max_vwap_dist_pct (%)
       4. RSI(14) > rsi_call
       5. Volumen > vela anterior ('prev'), > las 4 anteriores ('max4') o > su promedio ('avg4')
+      6. (opcional) confirm_tf=5 o 15: en la última vela YA CERRADA de esa temporalidad mayor,
+         EMA 9 > EMA 21 y cierre sobre el VWAP (tendencia a favor). 0 = sin confirmación.
     """
     k = candles(ctx, timeframe)
     o, h, l, c, v = k["open"], k["high"], k["low"], k["close"], k["volume"]
     e9, e21, r, vw = k["ema9"], k["ema21"], k["rsi"], k["vwap"]
+    if confirm_tf and confirm_tf <= timeframe:
+        return None
+    big = candles(ctx, confirm_tf) if confirm_tf else None
     first, last = _t(start), _t(last_entry)
     for j in range(max(4, vwap_slope_bars), len(c)):
         pos = int(k["end_pos"][j])
@@ -316,6 +322,15 @@ def ema_vwap_rsi(ctx: DayContext, timeframe: int = 5, target_r: float = 1.5, sto
                and min_vwap_dist_pct <= -dist <= max_vwap_dist_pct
                and (vwap_slope_bars == 0 or vw[j] < prev_vw)
                and r[j] < rsi_put)
+        if big is not None and (call or put):
+            # última vela mayor que ya cerró en este momento (sin mirar el futuro)
+            done = np.where(big["regular"] & (big["end_pos"] <= pos))[0]
+            if len(done) == 0:
+                continue
+            b = done[-1]
+            trend_up = big["ema9"][b] > big["ema21"][b] and big["close"][b] > big["vwap"][b]
+            trend_down = big["ema9"][b] < big["ema21"][b] and big["close"][b] < big["vwap"][b]
+            call, put = call and trend_up, put and trend_down
         if not (call or put):
             continue
         d = 1 if call else -1
@@ -335,6 +350,8 @@ class StrategySpec:
     grid: dict[str, list]
     # variantes que apagan una regla a la vez, para ver si esa regla realmente ayuda
     ablations: dict[str, dict] = field(default_factory=dict)
+    # descarta combinaciones sin sentido (ej. confirmar velas de 15m con velas de 5m)
+    valid: Callable[[dict], bool] | None = None
 
 
 STRATEGIES: dict[str, StrategySpec] = {
@@ -360,12 +377,14 @@ STRATEGIES: dict[str, StrategySpec] = {
         "fill_fraction": [0.5, 1.0],
     }),
     "ema_vwap_rsi": StrategySpec(ema_vwap_rsi, "Estrategia de Karen: EMA 9/21 + VWAP + RSI + volumen", {
-        "timeframe": [1, 2, 5],
+        "timeframe": [1, 5, 15],
+        "confirm_tf": [0, 5, 15],
         "target_r": [1.0, 1.5, 2.0],
         "stop_mode": ["candle", "ema21"],
         "vol_mode": ["prev", "max4"],
         "max_vwap_dist_pct": [0.3, 100.0],
-    }, ablations={
+    }, valid=lambda p: p["confirm_tf"] == 0 or p["confirm_tf"] > p["timeframe"], ablations={
+        "sin confirmación mayor": {"confirm_tf": 0},
         "sin RSI": {"rsi_call": 0, "rsi_put": 100},
         "sin volumen": {"vol_mode": "none"},
         "sin vela sólida": {"body_min": 0.0},
