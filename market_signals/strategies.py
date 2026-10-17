@@ -115,6 +115,7 @@ class Signal:
     target_price: float | None = None  # ...o un precio fijo
     exit_by: time = time(11, 30)       # salida por tiempo (scalping, no se queda todo el día)
     note: str = ""
+    conditions: str = ""  # condiciones del score que se cumplieron, ej. "C1,C3,C5"
 
 
 def orb(ctx: DayContext, range_minutes: int = 5, target_r: float = 2.0, stop_mode: str = "range",
@@ -343,6 +344,80 @@ def ema_vwap_rsi(ctx: DayContext, timeframe: int = 5, target_r: float = 1.5, sto
     return None
 
 
+def _last_closed(k: dict[str, np.ndarray], pos: int) -> int:
+    """Índice de la última vela que YA CERRÓ cuando cierra la vela de 1 minuto `pos`."""
+    j = int(np.searchsorted(k["end_pos"], pos, side="right")) - 1
+    while j >= 0 and not k["complete"][j]:
+        j -= 1
+    return j
+
+
+def karen_score(ctx: DayContext, min_score: int = 7, stop_mode: str = "candle5", target_r: float = 1.5,
+                body_min: float = 0.6, ema_sep: float = 0.0003, sides: str = "calls", start: str = "09:30",
+                last_entry: str = "11:55", exit_by: str = "12:15") -> Signal | None:
+    """Estrategia de gates + score en 1m, 5m y 15m (la del bot).
+
+    Se evalúa al cierre de cada vela de 1 minuto, usando la última vela de 5m y de 15m que ya
+    cerró (sin mirar el futuro).
+
+    Gates obligatorios (CALL): G1 RSI 15m >= 60 | G2 RSI 1m entre 25 y 75 | G3 EMA9 > EMA21 en 15m
+    Score (1 punto cada una):
+      C1 EMA9>EMA21 15m   C2 EMA9>EMA21 5m   C3 EMA9>EMA21 1m   C4 RSI 5m >= 60
+      C5 precio > VWAP 15m   C6 precio > VWAP 5m   C7 volumen 5m > promedio de las 4 anteriores
+      C8 vela 5m verde y sólida   C9 RSI 15m >= 65   C10 (EMA9-EMA21)/precio en 5m > ema_sep
+    PUT (si sides="both"): todo al revés (RSI 15m <= 40 / <= 35, RSI 5m <= 40, bajo los VWAP...).
+    """
+    k1, k5, k15 = candles(ctx, 1), candles(ctx, 5), candles(ctx, 15)
+    first, last = _t(start), _t(last_entry)
+    directions = (1, -1) if sides == "both" else (1,)
+    for i in range(ctx.first_pos_at_or_after(first), ctx.signal_end):
+        if ctx.times[i] > last:
+            break
+        a, b, c = _last_closed(k1, i), _last_closed(k5, i), _last_closed(k15, i)
+        if b < 4 or c < 1:
+            continue
+        price = float(ctx.c[i])
+        r1, r5, r15 = k1["rsi"][a], k5["rsi"][b], k15["rsi"][c]
+        if not 25 <= r1 <= 75:  # G2 vale para los dos lados
+            continue
+        for d in directions:
+            up = d == 1
+            # gates
+            if not ((r15 >= 60) if up else (r15 <= 40)):
+                continue
+            if not ((k15["ema9"][c] > k15["ema21"][c]) if up else (k15["ema9"][c] < k15["ema21"][c])):
+                continue
+            o5, h5, l5, c5 = k5["open"][b], k5["high"][b], k5["low"][b], k5["close"][b]
+            rng5 = h5 - l5
+            solid = rng5 > 0 and abs(c5 - o5) / rng5 >= body_min and ((c5 > o5) if up else (c5 < o5))
+            above = lambda x, y: (x > y) if up else (x < y)  # noqa: E731
+            checks = {
+                "C1": above(k15["ema9"][c], k15["ema21"][c]),
+                "C2": above(k5["ema9"][b], k5["ema21"][b]),
+                "C3": above(k1["ema9"][a], k1["ema21"][a]),
+                "C4": (r5 >= 60) if up else (r5 <= 40),
+                "C5": not np.isnan(k15["vwap"][c]) and above(price, k15["vwap"][c]),
+                "C6": not np.isnan(k5["vwap"][b]) and above(price, k5["vwap"][b]),
+                "C7": k5["volume"][b] > k5["volume"][b - 4:b].mean(),
+                "C8": bool(solid),
+                "C9": (r15 >= 65) if up else (r15 <= 35),
+                "C10": d * (k5["ema9"][b] - k5["ema21"][b]) / price > ema_sep,
+            }
+            met = [name for name, ok in checks.items() if ok]
+            if len(met) < min_score:
+                continue
+            if stop_mode == "candle5":
+                stop = l5 if up else h5
+            else:  # "ema21_5"
+                stop = k5["ema21"][b]
+            if (price - stop) * d <= 0:
+                continue  # el stop quedaría del lado equivocado
+            return Signal(i, d, float(stop), target_r=target_r, exit_by=_t(exit_by),
+                          note=f"Score {len(met)}/10 | RSI15 {r15:.0f} RSI5 {r5:.0f} RSI1 {r1:.0f}",
+                          conditions=",".join(met))
+    return None
+
+
 @dataclass(frozen=True)
 class StrategySpec:
     fn: Callable[..., Signal | None]
@@ -392,5 +467,20 @@ STRATEGIES: dict[str, StrategySpec] = {
         "RSI 55/45": {"rsi_call": 55, "rsi_put": 45},
         "RSI 70/30": {"rsi_call": 70, "rsi_put": 30},
         "solo hasta 10:30": {"last_entry": "10:30"},
+    }),
+    "karen_score": StrategySpec(karen_score, "Gates + score 1m/5m/15m (estrategia del bot)", {
+        "min_score": [6, 7, 8, 9, 10],
+        "stop_mode": ["candle5", "ema21_5"],
+        "target_r": [1.0, 1.5, 2.0],
+        "sides": ["calls", "both"],
+    }, ablations={
+        "score >= 6": {"min_score": 6},
+        "score >= 8": {"min_score": 8},
+        "score >= 9": {"min_score": 9},
+        "score 10/10": {"min_score": 10},
+        "también PUTs": {"sides": "both"},
+        "solo CALLs": {"sides": "calls"},
+        "solo hasta 10:30": {"last_entry": "10:30"},
+        "desde 9:45": {"start": "09:45"},
     }),
 }

@@ -72,7 +72,49 @@ python -m market_signals backtest --data data/SPY_1min.csv --strategy orb --para
 | `premarket_break` | El precio cruza el máximo o mínimo del pre-market |
 | `vwap_cross` | Recupera o pierde el VWAP con las EMAs 9/20 a favor |
 | `gap_fade` | Apuesta a que el gap de apertura se rellena |
+| `karen_score` | **Estrategia del bot**: 3 gates obligatorios + score de 10 condiciones en 1m/5m/15m |
 | `ema_vwap_rsi` | **Tu estrategia**: EMA 9/21, vela sólida que rompe los promedios, VWAP girado, RSI 60/40 y volumen |
+
+### Estrategia del bot (`karen_score`)
+
+Se evalúa al **cierre de cada vela de 1 minuto**, entre las 9:30 y las 11:55 ET. Usa la última vela de 5m y de 15m **ya cerrada**.
+
+**Gates obligatorios.** Si falla uno, no hay señal:
+
+| | CALL |
+|---|---|
+| G1 | RSI 15m ≥ 60 |
+| G2 | RSI 1m entre 25 y 75 |
+| G3 | EMA 9 > EMA 21 en 15m |
+
+**Score.** Un punto por cada condición cumplida:
+
+| | Condición |
+|---|---|
+| C1 / C2 / C3 | EMA 9 > EMA 21 en 15m / 5m / 1m |
+| C4 | RSI 5m ≥ 60 |
+| C5 / C6 | Precio > VWAP de 15m / 5m |
+| C7 | Volumen de la vela de 5m > promedio de las 4 anteriores |
+| C8 | Vela de 5m verde y sólida (cuerpo ≥ 60% del rango) |
+| C9 | RSI 15m ≥ 65 |
+| C10 | (EMA 9 − EMA 21) / precio en 5m > 0.0003 |
+
+Notas:
+- **C1 es igual al gate G3**, así que siempre suma. En la práctica, el score varía en 9 condiciones.
+- C5 y C6 casi siempre coinciden, porque el VWAP es casi el mismo en cualquier temporalidad.
+
+**Lo que no estaba en las fotos y el backtest prueba:**
+- puntaje mínimo (`min_score`): 6, 7, 8, 9 o 10;
+- stop (`stop_mode`): mínimo de la última vela de 5m (`candle5`) o EMA 21 de 5m (`ema21_5`);
+- objetivo (`target_r`): 1R, 1.5R o 2R;
+- PUTs con las reglas al revés (`sides`): `calls` o `both`.
+
+```bash
+python -m market_signals backtest --data data/SPY_1min.csv --only karen_score
+python -m market_signals backtest --data data/SPY_1min.csv --strategy karen_score --params '{"min_score":6}'
+```
+
+La tabla **"¿Qué condiciones del score importan?"** compara el resultado promedio de los trades cuando cada condición se cumplió y cuando no. Si `avg_r_sí` no es mayor que `avg_r_no`, esa condición no está ayudando. Usa un `min_score` bajo para tener casos de los dos lados.
 
 ### Tu estrategia traducida a reglas exactas
 

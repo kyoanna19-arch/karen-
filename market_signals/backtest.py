@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .strategies import STRATEGIES, DayContext, Signal
@@ -77,6 +78,7 @@ class Trade:
     r_net: float      # resultado después de costos
     gap_pct: float
     note: str
+    conditions: str = ""
 
 
 def simulate(ctx: DayContext, sig: Signal, strategy: str, cost_r: float = 0.1) -> Trade | None:
@@ -115,7 +117,7 @@ def simulate(ctx: DayContext, sig: Signal, strategy: str, cost_r: float = 0.1) -
     return Trade(day=ctx.day, strategy=strategy, direction=d, entry_time=ctx.times[e], entry=entry,
                  stop=sig.stop, target=float(target), exit_time=ctx.times[exit_pos], exit=exit_price,
                  exit_reason=reason, r=round(r, 3), r_net=round(r - cost_r, 3),
-                 gap_pct=round(ctx.gap_pct, 3), note=sig.note)
+                 gap_pct=round(ctx.gap_pct, 3), note=sig.note, conditions=sig.conditions)
 
 
 def run_strategy(contexts: list[DayContext], name: str, params: dict | None = None,
@@ -238,6 +240,23 @@ def breakdown(trades: list[Trade]) -> dict[str, pd.DataFrame]:
 
     return {"Por gap": agg("gap"), "Por día": agg("weekday"), "Por dirección": agg("side"),
             "Por hora de entrada": agg("hour")}
+
+
+def condition_impact(trades: list[Trade]) -> pd.DataFrame:
+    """Para estrategias con score: ¿los trades ganan más cuando se cumple cada condición?
+    Una condición útil tiene avg_r claramente mayor cuando se cumple que cuando no."""
+    rows = []
+    with_cond = [t for t in trades if t.conditions]
+    if not with_cond:
+        return pd.DataFrame()
+    names = sorted({c for t in with_cond for c in t.conditions.split(",")}, key=lambda n: int(n[1:]))
+    for name in names:
+        yes = [t.r_net for t in with_cond if name in t.conditions.split(",")]
+        no = [t.r_net for t in with_cond if name not in t.conditions.split(",")]
+        rows.append({"condición": name, "trades_sí": len(yes),
+                     "avg_r_sí": round(float(np.mean(yes)), 3) if yes else None,
+                     "trades_no": len(no), "avg_r_no": round(float(np.mean(no)), 3) if no else None})
+    return pd.DataFrame(rows)
 
 
 def ablation(contexts: list[DayContext], name: str, params: dict | None = None,

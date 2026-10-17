@@ -63,6 +63,10 @@ def cmd_backtest(args) -> None:
         print(bt.monthly_table(trades).to_string())
         for title, table in bt.breakdown(trades).items():
             print(f"\n{title}:\n{table.to_string()}")
+        impact = bt.condition_impact(trades)
+        if not impact.empty:
+            print("\n¿Qué condiciones del score importan? (usa min_score bajo para ver más casos):")
+            print(impact.to_string(index=False))
         if STRATEGIES[args.strategy].ablations:
             print("\n¿Qué regla aporta? (cada fila apaga una regla):")
             print(bt.ablation(contexts, args.strategy, params, args.cost_r).to_string())
