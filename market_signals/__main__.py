@@ -5,6 +5,9 @@ Comandos:
   monitor     Vigila una estrategia en vivo y alerta la señal
   download    Descarga barras de 1 minuto de Tradier a data/
   history     Descarga años de historial de 1 minuto desde Polygon.io
+  ibkr-test   Revisa la conexión con tu cuenta paper de Interactive Brokers
+  paper       Opera la estrategia automáticamente en tu cuenta PAPER de IBKR
+  paper-journal  Resumen de los trades hechos en paper
   backtest    Compara estrategias con datos históricos (mes por mes)
   telegram-test  Envía un mensaje de prueba a tu Telegram
 """
@@ -124,6 +127,64 @@ def cmd_history(args) -> None:
         print(f"Listo: {path}" if path else f"No se descargó nada de {symbol}.")
 
 
+def _ibkr(client_id: int | None = None):
+    import os
+    from .ibkr import IBKRBroker
+    return IBKRBroker(os.environ.get("IBKR_HOST", "127.0.0.1"), int(os.environ.get("IBKR_PORT", "7497")),
+                      client_id or int(os.environ.get("IBKR_CLIENT_ID", "7")))
+
+
+def cmd_ibkr_test(args) -> None:
+    from datetime import date
+    from .monitor import now_et
+    settings = load_settings()
+    broker = _ibkr()
+    try:
+        print("✅ Conectado a IBKR en modo PAPER")
+        print(broker.summary())
+        bars = broker.minute_bars(args.symbol, now_et())
+        print(f"Velas de 1 minuto de hoy para {args.symbol}: {len(bars)}"
+              + (f" (última {bars.index[-1]:%H:%M} ET, {bars['close'].iloc[-1]:.2f})" if len(bars) else ""))
+        print(f"Día anterior: {broker.prev_day(args.symbol, date.today())}")
+        price = float(bars["close"].iloc[-1]) if len(bars) else broker.prev_day(args.symbol, date.today())["close"]
+        options = broker.option_candidates(args.symbol, 1, price, date.today())
+        print(f"Calls cerca del precio: {len(options)}")
+        for o in options[:4]:
+            print(f"   {o['symbol']}  bid {o['bid']}  ask {o['ask']}  delta {(o['greeks'] or {}).get('delta')}")
+        if options and all(o["bid"] == 0 for o in options):
+            print("⚠️ No llegan precios de opciones: revisa tu suscripción de datos de mercado (OPRA) "
+                  "o usa --feed tradier en el comando paper.")
+    finally:
+        broker.disconnect()
+    if settings.tradier_token:
+        print("Tradier también está configurado: puedes usar --feed tradier (recomendado).")
+
+
+def cmd_paper(args) -> None:
+    from .monitor import now_et
+    from .paper import PaperTrader
+    settings = load_settings()
+    notify = Notifier(settings.telegram_bot_token, settings.telegram_chat_id, args.send)
+    broker = _ibkr()
+    try:
+        notify(f"Conectado a IBKR PAPER. {broker.summary()}")
+        if args.feed == "ibkr":
+            feed = broker
+        else:
+            from .feeds import TradierFeed
+            feed = TradierFeed(_client(settings))
+        params = json.loads(args.params) if args.params else {}
+        PaperTrader(feed, broker, settings, notify, args.symbol.upper(), args.strategy, params,
+                    now=now_et, sleep=broker.sleep, poll_seconds=args.poll, until=args.until).run()
+    finally:
+        broker.disconnect()
+
+
+def cmd_paper_journal(args) -> None:
+    from .paper import journal_summary
+    print(journal_summary())
+
+
 def cmd_telegram_test(args) -> None:
     settings = load_settings()
     if not settings.telegram_enabled:
@@ -177,6 +238,24 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--pause", type=float, default=12.5,
                    help="Segundos entre consultas (12.5 para el plan gratuito, 0 si pagas)")
     p.set_defaults(func=cmd_history)
+
+    p = sub.add_parser("ibkr-test", help="Probar la conexión con IBKR paper")
+    p.add_argument("--symbol", default="SPY")
+    p.set_defaults(func=cmd_ibkr_test)
+
+    p = sub.add_parser("paper", help="Operar automáticamente en la cuenta PAPER de IBKR")
+    p.add_argument("--symbol", default="SPY")
+    p.add_argument("--strategy", choices=list(STRATEGIES), default="ema_vwap_rsi")
+    p.add_argument("--params", help="Parámetros JSON (usa los que ganaron en el backtest)")
+    p.add_argument("--feed", choices=["tradier", "ibkr"], default="tradier",
+                   help="De dónde salen las velas y precios de opciones (las órdenes siempre van a IBKR)")
+    p.add_argument("--until", default="12:00", help="Hora ET límite para buscar entrada")
+    p.add_argument("--poll", type=float, default=15, help="Segundos entre revisiones")
+    p.add_argument("--send", action="store_true", help="Enviar avisos a Telegram")
+    p.set_defaults(func=cmd_paper)
+
+    p = sub.add_parser("paper-journal", help="Resumen de la bitácora de paper")
+    p.set_defaults(func=cmd_paper_journal)
 
     p = sub.add_parser("telegram-test", help="Probar Telegram")
     p.set_defaults(func=cmd_telegram_test)
