@@ -26,6 +26,35 @@ from .strategies import STRATEGIES
 from .telegram import Notifier
 
 
+def _value(text: str):
+    for cast in (int, float):
+        try:
+            return cast(text)
+        except ValueError:
+            pass
+    return text
+
+
+def parse_params(text: str | None) -> dict:
+    """Acepta JSON ('{"min_score":9}') o la forma simple 'min_score=9,timeframe=5'.
+    La forma simple funciona en PowerShell de Windows, que a veces borra las comillas del JSON."""
+    if not text:
+        return {}
+    text = text.strip()
+    if text.startswith("{"):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            raise SystemExit("No entendí --params. En Windows usa la forma simple, ej. --params min_score=9")
+    params = {}
+    for part in text.split(","):
+        if "=" not in part:
+            raise SystemExit(f"Parámetro sin '=': {part}. Ejemplo: --params min_score=9,target_r=1.5")
+        key, value = part.split("=", 1)
+        params[key.strip()] = _value(value.strip())
+    return params
+
+
 def _client(settings):
     from .tradier import TradierClient
     return TradierClient(settings.tradier_token, settings.tradier_base_url)
@@ -55,7 +84,7 @@ def cmd_backtest(args) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
     if args.strategy:
-        params = json.loads(args.params) if args.params else {}
+        params = parse_params(args.params)
         trades = bt.run_strategy(contexts, args.strategy, params, args.cost_r)
         print(f"== {args.strategy} {params} ==")
         for k, v in bt.summarize(trades).items():
@@ -105,7 +134,7 @@ def cmd_monitor(args) -> None:
     from .monitor import run_monitor
     settings = load_settings()
     notify = Notifier(settings.telegram_bot_token, settings.telegram_chat_id, args.send)
-    params = json.loads(args.params) if args.params else {}
+    params = parse_params(args.params)
     run_monitor(_client(settings), settings, notify, args.symbol.upper(), args.strategy, params,
                 until=args.until, poll_seconds=args.poll)
 
@@ -135,7 +164,7 @@ def cmd_history(args) -> None:
 def cmd_options_study(args) -> None:
     from . import options_sim as osim
     contexts = _load_contexts(args)
-    params = json.loads(args.params) if args.params else {}
+    params = parse_params(args.params)
     pairs = osim.signals_for(contexts, STRATEGIES[args.strategy].fn, params)
     pd.set_option("display.width", 220)
     print(f"Estrategia {args.strategy} {params}: {len(pairs)} señales en {len(contexts)} días")
@@ -250,7 +279,7 @@ def cmd_paper(args) -> None:
         else:
             from .feeds import TradierFeed
             feed = TradierFeed(_client(settings))
-        params = json.loads(args.params) if args.params else {}
+        params = parse_params(args.params)
         plan = None
         if args.exit_mode == "premium":
             from .options_sim import ExitPlan

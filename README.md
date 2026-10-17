@@ -44,7 +44,7 @@ cp .env.example .env             # luego edita .env con tus datos
 | Hora ET | Comando | Qué hace |
 |---|---|---|
 | 9:00 | `python -m market_signals premarket --send` | Reporte con sesgo y niveles a Telegram |
-| 9:30 | `python -m market_signals monitor --symbol SPY --strategy orb --params '{"range_minutes":5,"target_r":1.5}' --send` | Vigila la estrategia hasta las 11:30 y te avisa |
+| 9:30 | `python -m market_signals monitor --symbol SPY --strategy orb --params range_minutes=5,target_r=1.5 --send` | Vigila la estrategia hasta las 11:30 y te avisa |
 | Viernes | `python -m market_signals history --symbol SPY,QQQ --years 0.1` | Agrega la semana al historial (Polygon) |
 
 En el monitor, usa la estrategia y los parámetros que **ganaron en el backtest**, no los del ejemplo.
@@ -61,7 +61,7 @@ python -m market_signals backtest --demo
 python -m market_signals backtest --data data/SPY_1min.csv
 
 # Análisis detallado de una estrategia
-python -m market_signals backtest --data data/SPY_1min.csv --strategy orb --params '{"range_minutes":15,"target_r":1.5}'
+python -m market_signals backtest --data data/SPY_1min.csv --strategy orb --params range_minutes=15,target_r=1.5
 ```
 
 ### Estrategias incluidas
@@ -111,7 +111,7 @@ Notas:
 
 ```bash
 python -m market_signals backtest --data data/SPY_1min.csv --only karen_score
-python -m market_signals backtest --data data/SPY_1min.csv --strategy karen_score --params '{"min_score":6}'
+python -m market_signals backtest --data data/SPY_1min.csv --strategy karen_score --params min_score=6
 ```
 
 La tabla **"¿Qué condiciones del score importan?"** compara el resultado promedio de los trades cuando cada condición se cumplió y cuando no. Si `avg_r_sí` no es mayor que `avg_r_no`, esa condición no está ayudando. Usa un `min_score` bajo para tener casos de los dos lados.
@@ -142,7 +142,7 @@ Lo que no estaba en tus reglas y el backtest decide: stop en el extremo de la ve
 python -m market_signals backtest --data data/SPY_1min.csv --only ema_vwap_rsi
 
 # Detalle mes por mes + qué regla aporta y cuál sobra
-python -m market_signals backtest --data data/SPY_1min.csv --strategy ema_vwap_rsi --params '{"timeframe":1,"confirm_tf":15}'
+python -m market_signals backtest --data data/SPY_1min.csv --strategy ema_vwap_rsi --params timeframe=1,confirm_tf=15
 ```
 
 La tabla **"¿Qué regla aporta?"** apaga una regla a la vez. Si al quitar una regla el resultado **mejora** o no cambia, esa regla no está sumando y solo te quita trades buenos. Si al quitarla **empeora**, es una regla importante.
@@ -198,7 +198,7 @@ Si el plan gratis no alcanza para algunos meses antiguos, el comando los salta y
 El backtest normal mide en el precio de SPY. Para probar reglas sobre la **prima de la opción** (como un stop del 25%), el sistema estima el precio de una opción 0DTE con delta ~0.45 minuto a minuto, usando Black-Scholes. El modelo incluye la pérdida por tiempo (theta).
 
 ```bash
-python -m market_signals options-study --data data/SPY_1min.csv --params '{"min_score":9}'
+python -m market_signals options-study --data data/SPY_1min.csv --params min_score=9
 ```
 
 Te muestra cinco cosas:
@@ -232,7 +232,7 @@ El programa detecta la señal, compra la opción, pone el stop y las ventas esca
 
 ```bash
 python -m market_signals ibkr-test                      # revisa conexión, cuenta, velas y opciones
-python -m market_signals paper --params '{"min_score":9}' --send
+python -m market_signals paper --params min_score=9 --send
 python -m market_signals paper-journal                  # resumen de tus trades en paper
 ```
 

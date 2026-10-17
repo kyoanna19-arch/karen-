@@ -94,3 +94,23 @@ def test_live_signal_on_last_closed_bar_and_alert():
                 "spread_pct": 0.087, "greeks": {"delta": 0.45}}
     text = format_alert("SPY", "orb", ctx, sig, contract, settings)
     assert "CALL" in text and "2 contrato(s)" in text
+
+
+def test_parse_params_simple_and_json():
+    from market_signals.__main__ import parse_params
+    assert parse_params(None) == {}
+    assert parse_params('{"min_score": 9}') == {"min_score": 9}
+    assert parse_params("min_score=9,target_r=1.5,stop_mode=candle5,start=09:45") == {
+        "min_score": 9, "target_r": 1.5, "stop_mode": "candle5", "start": "09:45"}
+    with pytest.raises(SystemExit):
+        parse_params("{min_score:9}")  # JSON sin comillas, como lo deja PowerShell
+
+
+def test_dotenv_with_bom(tmp_path, monkeypatch):
+    from market_signals.config import load_dotenv
+    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_bytes("﻿POLYGON_API_KEY=abc123\n".encode("utf-8"))  # el Bloc de notas puede agregar BOM
+    load_dotenv(env)
+    import os
+    assert os.environ["POLYGON_API_KEY"] == "abc123"
