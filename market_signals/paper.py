@@ -23,6 +23,7 @@ import pandas as pd
 from .config import Settings
 from .monitor import live_signal
 from .options import contracts_for_risk, pick_contract
+from .options_sim import ExitPlan
 from .strategies import STRATEGIES, DayContext, Signal
 
 JOURNAL = Path("data/paper_journal.csv")
@@ -37,8 +38,23 @@ class Feed(Protocol):
 class Broker(Protocol):
     def buy(self, option: dict, qty: int, limit: float) -> tuple[int, float] | None: ...
     def protective_stop(self, option: dict, qty: int, stop_price: float): ...
-    def stop_fill(self, handle) -> float | None: ...
-    def sell(self, option: dict, qty: int, stop_handle) -> float: ...
+    def sell_limit(self, option: dict, qty: int, price: float): ...
+    def order_fill(self, handle) -> float | None: ...
+    def cancel(self, handle) -> None: ...
+    def sell(self, option: dict, qty: int, open_orders: list) -> float: ...
+
+
+def split_qty(qty: int, tiers) -> list[tuple[int, float]]:
+    """Reparte los contratos entre los escalones: [(contratos, ganancia)].
+    Con pocos contratos los primeros escalones tienen prioridad (con 1 contrato todo sale en el primero)."""
+    out, left = [], qty
+    for gain, frac in tiers:
+        q = min(left, max(1, round(frac * qty))) if left > 0 else 0
+        out.append((q, gain))
+        left -= q
+    if left > 0 and out and sum(f for _, f in tiers) >= 0.999:
+        out[-1] = (out[-1][0] + left, out[-1][1])
+    return out
 
 
 @dataclass
@@ -81,7 +97,7 @@ class PaperTrader:
     def __init__(self, feed: Feed, broker: Broker, settings: Settings, notify: Callable[[str], None],
                  symbol: str, strategy: str, params: dict, now: Callable[[], datetime],
                  sleep: Callable[[float], None] = systime.sleep, poll_seconds: float = 15,
-                 until: str = "12:00", journal: Path = JOURNAL):
+                 until: str = "12:00", journal: Path = JOURNAL, exit_plan: ExitPlan | None = None):
         self.feed, self.broker, self.settings, self.notify = feed, broker, settings, notify
         self.symbol, self.strategy, self.params = symbol, strategy, params
         self.now, self.sleep, self.poll_seconds = now, sleep, poll_seconds
@@ -94,6 +110,11 @@ class PaperTrader:
         self.checked_pos = -1
         self.target = 0.0
         self.entry_price = 0.0
+        self.plan = exit_plan
+        self.fills: list[tuple[int, float, str]] = []  # (contratos, precio, motivo)
+        self.remaining = 0
+        self.tier_orders: list[list] = []  # [orden, contratos, ganancia, llenada]
+        self.at_breakeven = False
 
     # ------------------------------------------------------------------ ciclo principal
     def run(self) -> PaperTrade | None:
@@ -137,8 +158,9 @@ class PaperTrader:
         if option is None:
             self.notify(f"PAPER {self.symbol}: señal {side} pero sin contrato con spread aceptable. No entro.")
             return False
+        stop_pct = self.plan.stop_pct * 100 if self.plan else self.settings.option_stop_pct
         qty = contracts_for_risk(self.settings.account_size, self.settings.risk_per_trade_pct, option["ask"],
-                                 self.settings.option_stop_pct)
+                                 stop_pct)
         if qty == 0:
             self.notify(f"PAPER {self.symbol}: señal {side} pero la prima ({option['ask']}) es muy cara "
                         "para tu riesgo por trade. No entro.")
@@ -148,28 +170,69 @@ class PaperTrader:
             self.notify(f"PAPER {self.symbol}: la orden de compra de {option['symbol']} no se llenó. Cancelada.")
             return False
         qty, fill = filled
-        stop_price = fill * (1 - self.settings.option_stop_pct / 100)
+        self.remaining = qty
+        stop_price = fill * (1 - stop_pct / 100)
         self.stop_handle = self.broker.protective_stop(option, qty, stop_price)
+        tiers_text = ""
+        if self.plan:
+            for q, gain in split_qty(qty, self.plan.tiers):
+                if q > 0:
+                    self.tier_orders.append([self.broker.sell_limit(option, q, fill * (1 + gain)), q, gain, False])
+                    tiers_text += f"\nVenta límite: {q} a ${fill * (1 + gain):.2f} (+{int(gain * 100)}%)"
+            if qty - sum(t[1] for t in self.tier_orders) > 0:
+                tiers_text += f"\n{qty - sum(t[1] for t in self.tier_orders)} contrato(s) corren hasta la hora límite"
         self.sig, self.option, self.checked_pos, self.entry_price = sig, option, sig.pos, price
         self.trade = PaperTrade(
             date=str(today), symbol=self.symbol, strategy=self.strategy, params=json.dumps(self.params),
             side=side, signal_time=f"{ctx.times[sig.pos]:%H:%M}", underlying_entry=round(price, 2),
             underlying_stop=round(sig.stop, 2), underlying_target=round(self.target, 2),
             option=option["symbol"], qty=qty, option_entry=fill)
+        levels = (f"Subyacente {price:.2f} | salida máx. {sig.exit_by:%H:%M} ET" if self.plan else
+                  f"Subyacente {price:.2f} | stop {sig.stop:.2f} | objetivo {self.target:.2f} | "
+                  f"salida máx. {sig.exit_by:%H:%M} ET")
         self.notify(
             f"🧪 PAPER ENTRADA {self.symbol} {side}\n{sig.note}\n"
-            f"Compré {qty} x {option['symbol']} a ${fill:.2f}\n"
-            f"Subyacente {price:.2f} | stop {sig.stop:.2f} | objetivo {self.target:.2f} | "
-            f"salida máx. {sig.exit_by:%H:%M} ET\n"
-            f"Stop de protección en la opción: ${stop_price:.2f}")
+            f"Compré {qty} x {option['symbol']} a ${fill:.2f}\n{levels}\n"
+            f"Stop en la opción: ${stop_price:.2f} (-{stop_pct:.0f}%){tiers_text}")
         return True
 
     # ------------------------------------------------------------------ manejo de la posición
+    def _open_orders(self) -> list:
+        return [self.stop_handle] + [t[0] for t in self.tier_orders if not t[3]]
+
     def _manage(self, regular: pd.DataFrame, now: datetime) -> bool:
-        sig, trade = self.sig, self.trade
-        protective = self.broker.stop_fill(self.stop_handle)
+        sig = self.sig
+        protective = self.broker.order_fill(self.stop_handle)
         if protective is not None:
-            return self._close(protective, "stop opción", now, already_sold=True)
+            return self._close(protective, "breakeven" if self.at_breakeven else "stop opción", now,
+                               already_sold=True)
+
+        if self.plan:
+            for tier in self.tier_orders:
+                if tier[3]:
+                    continue
+                price = self.broker.order_fill(tier[0])
+                if price is None:
+                    continue
+                tier[3] = True
+                self.fills.append((tier[1], price, f"+{int(tier[2] * 100)}%"))
+                self.remaining -= tier[1]
+                self.notify(f"💰 PAPER {self.symbol}: vendí {tier[1]} a ${price:.2f} (+{int(tier[2] * 100)}%). "
+                            f"Quedan {self.remaining}.")
+                if self.remaining <= 0:
+                    self.broker.cancel(self.stop_handle)
+                    return self._finish(now)
+                self.broker.cancel(self.stop_handle)  # el stop se ajusta a los contratos que quedan
+                stop_price = (self.trade.option_entry if self.plan.breakeven
+                              else self.trade.option_entry * (1 - self.plan.stop_pct))
+                self.at_breakeven = self.at_breakeven or self.plan.breakeven
+                self.stop_handle = self.broker.protective_stop(self.option, self.remaining, stop_price)
+                if self.plan.breakeven:
+                    self.notify(f"PAPER {self.symbol}: stop movido a breakeven (${stop_price:.2f}).")
+            closed_after_limit = any(t.time() >= sig.exit_by for t in regular.index[self.checked_pos + 1:])
+            if now.time() >= sig.exit_by or closed_after_limit:
+                return self._close(None, "tiempo", now)
+            return False
 
         d = sig.direction
         times = list(regular.index)
@@ -189,20 +252,33 @@ class PaperTrader:
 
     def _close(self, price: float | None, reason: str, now: datetime, already_sold: bool = False,
                exit_underlying: float | None = None) -> bool:
-        trade = self.trade
-        if not already_sold:
-            price = self.broker.sell(self.option, trade.qty, self.stop_handle)
-        trade.option_exit = round(float(price), 2)
-        trade.exit_time = f"{now:%H:%M}"
-        trade.exit_reason = reason
-        trade.pnl = round((trade.option_exit - trade.option_entry) * 100 * trade.qty, 2)
+        """Cierra los contratos que quedan (vendiendo, o porque el stop ya los vendió)."""
+        if self.remaining > 0:
+            if already_sold:
+                for tier in self.tier_orders:
+                    if not tier[3]:
+                        self.broker.cancel(tier[0])
+            else:
+                price = self.broker.sell(self.option, self.remaining, self._open_orders())
+            self.fills.append((self.remaining, float(price), reason))
+            self.remaining = 0
         risk = abs(self.entry_price - self.sig.stop)
         if exit_underlying is not None and risk > 0:
-            trade.r_underlying = round((exit_underlying - self.entry_price) * self.sig.direction / risk, 2)
+            self.trade.r_underlying = round((exit_underlying - self.entry_price) * self.sig.direction / risk, 2)
+        return self._finish(now)
+
+    def _finish(self, now: datetime) -> bool:
+        trade = self.trade
+        sold = sum(q for q, _, _ in self.fills)
+        trade.option_exit = round(sum(q * p for q, p, _ in self.fills) / sold, 2)
+        trade.exit_time = f"{now:%H:%M}"
+        trade.exit_reason = " / ".join(r for _, _, r in self.fills)
+        trade.pnl = round(sum((p - trade.option_entry) * 100 * q for q, p, _ in self.fills), 2)
         append_journal(trade, self.journal)
         emoji = "✅" if trade.pnl > 0 else "❌"
-        self.notify(f"{emoji} PAPER SALIDA {self.symbol} {trade.side} ({reason})\n"
-                    f"{trade.qty} x {trade.option}: ${trade.option_entry:.2f} → ${trade.option_exit:.2f}\n"
+        detail = "\n".join(f"  {q} a ${p:.2f} ({r})" for q, p, r in self.fills)
+        self.notify(f"{emoji} PAPER SALIDA {self.symbol} {trade.side}\n"
+                    f"{trade.qty} x {trade.option}, entrada ${trade.option_entry:.2f}\n{detail}\n"
                     f"Resultado: ${trade.pnl:+,.2f}")
         return True
 

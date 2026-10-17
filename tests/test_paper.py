@@ -46,8 +46,8 @@ class FakeFeed:
 
 
 class FakeBroker:
-    def __init__(self, feed, stop_hits=False):
-        self.feed, self.stop_hits = feed, stop_hits
+    def __init__(self, feed, stop_hits=False, price_stops=False):
+        self.feed, self.stop_hits, self.price_stops = feed, stop_hits, price_stops
         self.orders = []
         self.entry_underlying = None
         self.direction = 1
@@ -58,17 +58,35 @@ class FakeBroker:
         self.direction = 1 if option["option_type"] == "call" else -1
         return qty, limit
 
-    def protective_stop(self, option, qty, stop_price):
-        self.orders.append(("STOP", option["symbol"], qty, round(stop_price, 2)))
-        return SimpleNamespace(price=stop_price)
-
-    def stop_fill(self, handle):
-        return handle.price if self.stop_hits else None
-
-    def sell(self, option, qty, stop_handle):
-        self.orders.append(("SELL", option["symbol"], qty))
+    def option_price(self):
         move = (self.feed.last_price - self.entry_underlying) * self.direction
         return max(0.01, 1.20 + 0.45 * move)
+
+    def protective_stop(self, option, qty, stop_price):
+        self.orders.append(("STOP", option["symbol"], qty, round(stop_price, 2)))
+        return SimpleNamespace(kind="stop", price=stop_price, qty=qty, cancelled=False)
+
+    def sell_limit(self, option, qty, price):
+        self.orders.append(("LIMIT", option["symbol"], qty, round(price, 2)))
+        return SimpleNamespace(kind="limit", price=price, qty=qty, cancelled=False)
+
+    def order_fill(self, handle):
+        if handle.cancelled:
+            return None
+        if handle.kind == "stop":
+            hit = self.stop_hits or (self.price_stops and self.option_price() <= handle.price)
+            return handle.price if hit else None
+        return handle.price if self.option_price() >= handle.price else None
+
+    def cancel(self, handle):
+        handle.cancelled = True
+        self.orders.append(("CANCEL", handle.kind, handle.qty))
+
+    def sell(self, option, qty, open_orders):
+        for h in open_orders:
+            self.cancel(h)
+        self.orders.append(("SELL", option["symbol"], qty))
+        return self.option_price()
 
 
 def day_setup(contexts, i):
@@ -83,12 +101,13 @@ def contexts():
     return bt.build_contexts(synthetic_bars(days=25, seed=9))
 
 
-def run_day(contexts, i, tmp_path, stop_hits=False, strategy="orb", params=None):
+def run_day(contexts, i, tmp_path, stop_hits=False, strategy="orb", params=None, plan=None):
     ctx, feed = day_setup(contexts, i)
-    broker = FakeBroker(feed, stop_hits)
+    broker = FakeBroker(feed, stop_hits, price_stops=plan is not None)
     clock = Clock(datetime.combine(ctx.day, datetime.min.time()).replace(hour=9, minute=30, second=5))
     trader = PaperTrader(feed, broker, SETTINGS, lambda m: None, "SPY", strategy, params or {},
-                         now=clock.now, sleep=clock.sleep, poll_seconds=60, journal=tmp_path / "j.csv")
+                         now=clock.now, sleep=clock.sleep, poll_seconds=60, journal=tmp_path / "j.csv",
+                         exit_plan=plan)
     return ctx, broker, trader.run()
 
 
@@ -105,7 +124,7 @@ def test_paper_matches_backtest_exit_reasons(contexts, tmp_path):
         assert trade.exit_reason == expected[0].exit_reason
         signal_bar = ctx.times[ctx.times.index(expected[0].entry_time) - 1]  # backtest entra en la vela siguiente
         assert trade.signal_time == f"{signal_bar:%H:%M}"
-        assert [o[0] for o in broker.orders] == ["BUY", "STOP", "SELL"]
+        assert [o[0] for o in broker.orders] in (["BUY", "STOP", "CANCEL", "SELL"], ["BUY", "STOP"])
         if trade.exit_reason in ("stop", "objetivo"):
             assert trade.r_underlying == pytest.approx(expected[0].r, abs=0.02)
         compared += 1
@@ -180,3 +199,40 @@ def test_ibkr_bars_converted_to_eastern():
                             open=1, high=2, low=0.5, close=1.5, volume=100)]
     df = bars_to_frame(bars)
     assert df.index[0] == pd.Timestamp("2026-03-04 09:30") and df["volume"].iloc[0] == 100.0
+
+
+def test_split_qty():
+    from market_signals.paper import split_qty
+    half = ((0.25, 0.5), (0.5, 0.5))
+    assert split_qty(2, half) == [(1, 0.25), (1, 0.5)]
+    assert split_qty(1, half) == [(1, 0.25), (0, 0.5)]
+    assert split_qty(5, half) == [(2, 0.25), (3, 0.5)]
+    assert split_qty(4, ((0.3, 0.5),)) == [(2, 0.3)]  # el resto corre hasta la hora límite
+    assert split_qty(3, ((0.25, 0.34), (0.5, 0.33), (1.0, 0.33))) == [(1, 0.25), (1, 0.5), (1, 1.0)]
+
+
+def test_premium_plan_scales_out_and_moves_stop(contexts, tmp_path):
+    from market_signals.options_sim import ExitPlan
+    plan = ExitPlan(stop_pct=0.25, tiers=((0.25, 0.5), (0.5, 0.5)), breakeven=True)
+    seen = set()
+    for i in range(len(contexts)):
+        _, broker, trade = run_day(contexts, i, tmp_path, plan=plan)
+        if trade is None:
+            continue
+        kinds = [o[0] for o in broker.orders]
+        assert kinds[:4] == ["BUY", "STOP", "LIMIT", "LIMIT"]
+        assert broker.orders[1][3] == pytest.approx(0.90)  # -25% de $1.20
+        assert broker.orders[2][3] == pytest.approx(1.50) and broker.orders[3][3] == pytest.approx(1.80)
+        reasons = trade.exit_reason.split(" / ")
+        seen.add(trade.exit_reason)
+        if reasons[0] == "+25%":
+            # después del primer escalón el stop se rehace a breakeven por 1 contrato
+            assert ("STOP", "SPY-OPT", 1, 1.2) in broker.orders
+            assert reasons[1] in ("+50%", "breakeven", "tiempo")
+        elif reasons == ["stop opción"]:
+            assert trade.pnl == pytest.approx((0.90 - 1.20) * 100 * 2)
+        expected_pnl = {"+25%": 0.30, "+50%": 0.60, "breakeven": 0.0, "stop opción": -0.30}
+        if len(reasons) == 2 and all(r in expected_pnl for r in reasons):  # 1 contrato por escalón
+            assert trade.pnl == pytest.approx(sum(expected_pnl[r] * 100 for r in reasons))
+        assert trade.qty == 2
+    assert any(r.startswith("+25%") for r in seen) and "stop opción" in seen

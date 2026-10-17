@@ -5,6 +5,7 @@ Comandos:
   monitor     Vigila una estrategia en vivo y alerta la señal
   download    Descarga barras de 1 minuto de Tradier a data/
   history     Descarga años de historial de 1 minuto desde Polygon.io
+  options-study  Estudia el stop sobre la prima y las salidas escalonadas
   ibkr-test   Revisa la conexión con tu cuenta paper de Interactive Brokers
   paper       Opera la estrategia automáticamente en tu cuenta PAPER de IBKR
   paper-journal  Resumen de los trades hechos en paper
@@ -131,6 +132,67 @@ def cmd_history(args) -> None:
         print(f"Listo: {path}" if path else f"No se descargó nada de {symbol}.")
 
 
+def cmd_options_study(args) -> None:
+    from . import options_sim as osim
+    contexts = _load_contexts(args)
+    params = json.loads(args.params) if args.params else {}
+    pairs = osim.signals_for(contexts, STRATEGIES[args.strategy].fn, params)
+    pd.set_option("display.width", 220)
+    print(f"Estrategia {args.strategy} {params}: {len(pairs)} señales en {len(contexts)} días")
+    if len(pairs) < 10:
+        print("Muy pocas señales para estudiar stops y salidas.")
+        return
+
+    def run(plan, iv=args.iv):
+        trades = [t for t in (osim.simulate_option(c, s, args.strategy, plan, iv=iv, slip=args.slip)
+                              for c, s in pairs) if t]
+        st = bt.summarize(trades)
+        avg_pct = sum(t.r for t in trades) * plan.stop_pct / len(trades) if trades else 0
+        return trades, {"trades": st["trades"], "win_rate": st["win_rate"], "avg_%_prima": round(avg_pct * 100, 1),
+                        "avg_r": st["avg_r"], f"$_por_trade_riesgo_{args.risk:.0f}": round(st["avg_r"] * args.risk, 2),
+                        "total_r": st["total_r"], "max_dd_r": st["max_drawdown_r"],
+                        "meses_+": st["pct_months_positive"], "peor_mes_r": st["worst_month_r"]}
+
+    study = osim.stop_study(pairs, iv=args.iv, slip=args.slip)
+    print(f"\nPrima promedio estimada: ${study['avg_premium']} (IV {args.iv:.0%}, opción 0DTE delta ~0.45)")
+    print("\n== 1. ¿Cuánto cae la opción antes de ganar? ==")
+    print(f"Peor caída de todos los trades (percentiles): {study['mae_percentiles']}")
+    print("De los trades que llegaron a cada meta, % que un stop habría sacado ANTES:")
+    print(pd.DataFrame(study["table"]).to_string(index=False))
+
+    print("\n== 2. Comparación de stops (misma salida: mitad en +25%, mitad en +50%) ==")
+    print("Con riesgo fijo en dólares, compara avg_r: un stop más corto permite más contratos.")
+    rows = []
+    for stop in osim.STOP_LEVELS:
+        _, row = run(osim.ExitPlan(stop_pct=stop, tiers=((0.25, 0.5), (0.5, 0.5)), breakeven=False))
+        rows.append({"stop": f"-{int(stop * 100)}%", **row})
+    print(pd.DataFrame(rows).to_string(index=False))
+
+    print(f"\n== 3. Salidas escalonadas con stop de -{int(args.stop * 100)}% ==")
+    rows, best = [], None
+    for plan in osim.EXIT_PLANS:
+        plan = osim.ExitPlan(stop_pct=args.stop, tiers=plan.tiers, breakeven=plan.breakeven)
+        trades, row = run(plan)
+        rows.append({"plan": plan.label(), **row})
+        if best is None or row["avg_r"] > best[2]["avg_r"]:
+            best = (plan, trades, row)
+    print(pd.DataFrame(rows).to_string(index=False))
+
+    plan, trades, _ = best
+    print(f"\n== 4. ¿Depende de la volatilidad? Mejor plan: {plan.label()} ==")
+    rows = [{"IV": f"{iv:.0%}", **run(plan, iv)[1]} for iv in (0.12, 0.18, 0.25, 0.35)]
+    print(pd.DataFrame(rows).to_string(index=False))
+    print("Si el resultado cambia de signo según la IV, la ventaja es frágil.")
+
+    print(f"\n== 5. Mes por mes con el mejor plan ==")
+    print(bt.monthly_table(trades).to_string())
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    bt.trades_frame(trades).to_csv(out / f"option_trades_{args.strategy}.csv", index=False)
+    print(f"\nTrades guardados en {out / f'option_trades_{args.strategy}.csv'}")
+    print("Recuerda: el precio de la opción es estimado con Black-Scholes. El paper trading confirma con precios reales.")
+
+
 def _ibkr(client_id: int | None = None):
     import os
     from .ibkr import IBKRBroker
@@ -164,6 +226,17 @@ def cmd_ibkr_test(args) -> None:
         print("Tradier también está configurado: puedes usar --feed tradier (recomendado).")
 
 
+def parse_tiers(text: str) -> tuple[tuple[float, float], ...]:
+    """'25:50,50:50' -> ((0.25, 0.5), (0.5, 0.5)): vender 50% en +25% y 50% en +50%."""
+    tiers = []
+    for part in text.split(","):
+        gain, frac = part.split(":")
+        tiers.append((float(gain) / 100, float(frac) / 100))
+    if sum(f for _, f in tiers) > 1.0001:
+        raise SystemExit("Los porcentajes de los escalones suman más de 100%")
+    return tuple(sorted(tiers))
+
+
 def cmd_paper(args) -> None:
     from .monitor import now_et
     from .paper import PaperTrader
@@ -178,8 +251,14 @@ def cmd_paper(args) -> None:
             from .feeds import TradierFeed
             feed = TradierFeed(_client(settings))
         params = json.loads(args.params) if args.params else {}
+        plan = None
+        if args.exit_mode == "premium":
+            from .options_sim import ExitPlan
+            plan = ExitPlan(stop_pct=args.stop_pct / 100, tiers=parse_tiers(args.tiers), breakeven=args.breakeven)
+            notify(f"Salida: stop -{args.stop_pct:.0f}% de la prima | {plan.label()}")
         PaperTrader(feed, broker, settings, notify, args.symbol.upper(), args.strategy, params,
-                    now=now_et, sleep=broker.sleep, poll_seconds=args.poll, until=args.until).run()
+                    now=now_et, sleep=broker.sleep, poll_seconds=args.poll, until=args.until,
+                    exit_plan=plan).run()
     finally:
         broker.disconnect()
 
@@ -243,14 +322,35 @@ def main(argv: list[str] | None = None) -> None:
                    help="Segundos entre consultas (12.5 para el plan gratuito, 0 si pagas)")
     p.set_defaults(func=cmd_history)
 
+    p = sub.add_parser("options-study", help="Estudiar stop sobre la prima y salidas escalonadas")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--data", help="CSV de barras de 1 minuto")
+    src.add_argument("--demo", action="store_true", help="Usar datos sintéticos de prueba")
+    p.add_argument("--demo-days", type=int, default=250)
+    p.add_argument("--strategy", choices=list(STRATEGIES), default="karen_score")
+    p.add_argument("--params", help="Parámetros JSON de la estrategia")
+    p.add_argument("--stop", type=float, default=0.25, help="Stop sobre la prima (0.25 = 25%%)")
+    p.add_argument("--iv", type=float, default=0.18, help="Volatilidad implícita supuesta (0.18 = 18%%)")
+    p.add_argument("--slip", type=float, default=0.01, help="Costo de spread por lado (0.01 = 1%%)")
+    p.add_argument("--risk", type=float, default=80, help="Dólares en riesgo por trade")
+    p.add_argument("--out", default="reports")
+    p.set_defaults(func=cmd_options_study)
+
     p = sub.add_parser("ibkr-test", help="Probar la conexión con IBKR paper")
     p.add_argument("--symbol", default="SPY")
     p.set_defaults(func=cmd_ibkr_test)
 
     p = sub.add_parser("paper", help="Operar automáticamente en la cuenta PAPER de IBKR")
     p.add_argument("--symbol", default="SPY")
-    p.add_argument("--strategy", choices=list(STRATEGIES), default="ema_vwap_rsi")
+    p.add_argument("--strategy", choices=list(STRATEGIES), default="karen_score")
     p.add_argument("--params", help="Parámetros JSON (usa los que ganaron en el backtest)")
+    p.add_argument("--exit-mode", choices=["premium", "underlying"], default="premium",
+                   help="premium: stop y escalones sobre la prima | underlying: stop/objetivo en el precio de SPY")
+    p.add_argument("--stop-pct", type=float, default=25, help="Stop sobre la prima en %% (modo premium)")
+    p.add_argument("--tiers", default="25:50,50:50",
+                   help="Escalones ganancia%%:contratos%%, ej. '25:50,50:50' = mitad en +25%%, mitad en +50%%")
+    p.add_argument("--breakeven", action=argparse.BooleanOptionalAction, default=True,
+                   help="Subir el stop a breakeven después del primer escalón")
     p.add_argument("--feed", choices=["tradier", "ibkr"], default="tradier",
                    help="De dónde salen las velas y precios de opciones (las órdenes siempre van a IBKR)")
     p.add_argument("--until", default="12:00", help="Hora ET límite para buscar entrada")

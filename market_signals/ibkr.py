@@ -174,20 +174,41 @@ class IBKRBroker:
         return self.ib.placeOrder(contract, StopOrder("SELL", qty, round_tick(stop_price, contract.symbol),
                                                       tif="DAY"))
 
-    def stop_fill(self, handle) -> float | None:
+    def sell_limit(self, option: dict, qty: int, price: float):
+        from ib_async import LimitOrder
+        contract = option["_contract"]
+        return self.ib.placeOrder(contract, LimitOrder("SELL", qty, round_tick(price, contract.symbol), tif="DAY"))
+
+    def order_fill(self, handle) -> float | None:
         if handle is not None and handle.orderStatus.status == "Filled":
             return float(handle.orderStatus.avgFillPrice)
         return None
 
-    def sell(self, option: dict, qty: int, stop_handle) -> float:
-        from ib_async import MarketOrder
-        if stop_handle is not None and not stop_handle.isDone():
-            self.ib.cancelOrder(stop_handle.order)
+    def cancel(self, handle) -> None:
+        if handle is not None and not handle.isDone():
+            self.ib.cancelOrder(handle.order)
             self.ib.sleep(1)
-            if stop_handle.orderStatus.status == "Filled":  # se llenó justo antes de cancelarlo
-                return float(stop_handle.orderStatus.avgFillPrice)
-        trade = self.ib.placeOrder(option["_contract"], MarketOrder("SELL", qty, tif="DAY"))
-        self._wait(trade)
-        if trade.orderStatus.status != "Filled":
-            raise IBKRError(f"La venta de {option['symbol']} no se llenó. ¡Revisa la posición en TWS!")
-        return float(trade.orderStatus.avgFillPrice)
+
+    def sell(self, option: dict, qty: int, open_orders: list) -> float:
+        """Cancela las órdenes abiertas (stop y escalones) y vende lo que quede a mercado.
+        Si alguna orden se llenó justo mientras se cancelaba, se cuenta a su precio."""
+        from ib_async import MarketOrder
+        sold_qty, sold_value = 0, 0.0
+        for handle in open_orders:
+            if handle is None:
+                continue
+            already = handle.orderStatus.filled
+            self.cancel(handle)
+            extra = handle.orderStatus.filled - already
+            if extra > 0:
+                sold_qty += int(extra)
+                sold_value += extra * float(handle.orderStatus.avgFillPrice)
+        left = qty - sold_qty
+        if left > 0:
+            trade = self.ib.placeOrder(option["_contract"], MarketOrder("SELL", left, tif="DAY"))
+            self._wait(trade)
+            if trade.orderStatus.status != "Filled":
+                raise IBKRError(f"La venta de {option['symbol']} no se llenó. ¡Revisa la posición en TWS!")
+            sold_qty += left
+            sold_value += left * float(trade.orderStatus.avgFillPrice)
+        return sold_value / sold_qty

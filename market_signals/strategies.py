@@ -352,7 +352,7 @@ def _last_closed(k: dict[str, np.ndarray], pos: int) -> int:
     return j
 
 
-def karen_score(ctx: DayContext, min_score: int = 7, stop_mode: str = "candle5", target_r: float = 1.5,
+def karen_score(ctx: DayContext, min_score: int = 9, stop_mode: str = "candle5", target_r: float = 1.5,
                 body_min: float = 0.6, ema_sep: float = 0.0003, sides: str = "calls", start: str = "09:30",
                 last_entry: str = "11:55", exit_by: str = "12:15") -> Signal | None:
     """Estrategia de gates + score en 1m, 5m y 15m (la del bot).
@@ -469,17 +469,14 @@ STRATEGIES: dict[str, StrategySpec] = {
         "solo hasta 10:30": {"last_entry": "10:30"},
     }),
     "karen_score": StrategySpec(karen_score, "Gates + score 1m/5m/15m (estrategia del bot)", {
-        "min_score": [6, 7, 8, 9, 10],
+        "min_score": [8, 9, 10],
         "stop_mode": ["candle5", "ema21_5"],
         "target_r": [1.0, 1.5, 2.0],
-        "sides": ["calls", "both"],
     }, ablations={
-        "score >= 6": {"min_score": 6},
+        "score >= 7": {"min_score": 7},
         "score >= 8": {"min_score": 8},
-        "score >= 9": {"min_score": 9},
         "score 10/10": {"min_score": 10},
         "también PUTs": {"sides": "both"},
-        "solo CALLs": {"sides": "calls"},
         "solo hasta 10:30": {"last_entry": "10:30"},
         "desde 9:45": {"start": "09:45"},
     }),

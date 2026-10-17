@@ -193,22 +193,83 @@ Si el plan gratis no alcanza para algunos meses antiguos, el comando los salta y
 
 ---
 
-## 4. Gestión de riesgo con una cuenta de $8,000
+## 4. Stop sobre la prima y ganancia escalonada (`options-study`)
 
-- **El riesgo por trade viene configurado en 1% ($80).** El sistema calcula cuántos contratos puedes comprar si sales cuando la opción pierde `OPTION_STOP_PCT`% (30% por defecto). Si la prima es muy cara, te dice que no entres.
+El backtest normal mide en el precio de SPY. Para probar reglas sobre la **prima de la opción** (como un stop del 25%), el sistema estima el precio de una opción 0DTE con delta ~0.45 minuto a minuto, usando Black-Scholes. El modelo incluye la pérdida por tiempo (theta).
+
+```bash
+python -m market_signals options-study --data data/SPY_1min.csv --params '{"min_score":9}'
+```
+
+Te muestra cinco cosas:
+1. **Cuánto cae la opción antes de ganar.** De los trades que llegaron a +20%, +25%, +30% o +50%, qué % habría sido sacado antes por un stop de 15%, 20%, 25%, 30%, 40% o 50%. **Así se elige el stop:** buscas el más corto que no saque a muchos trades buenos.
+2. **Comparación de stops** con la misma salida. Mira `avg_r`: con riesgo fijo en dólares, un stop más corto te deja comprar más contratos.
+3. **Planes de salida escalonada** con tu stop (por defecto -25%). Por ejemplo, "mitad en +25% y mitad en +50%", con o sin stop a breakeven.
+4. **Sensibilidad a la volatilidad.** Repite el mejor plan con IV de 12%, 18%, 25% y 35%. Si el resultado cambia de signo, la ventaja es frágil.
+5. **Mes por mes** con el mejor plan.
+
+⚠️ Es una estimación: la volatilidad real cambia durante el día. El paper trading confirma con precios reales.
+
+---
+
+## 5. Paper trading con Interactive Brokers
+
+El programa detecta la señal, compra la opción, pone el stop y las ventas escalonadas, y cierra lo que quede a la hora límite. **Solo funciona con cuentas paper:** si detecta una cuenta real o un puerto de cuenta real, se niega a operar.
+
+### Preparación (una sola vez)
+
+1. **Cuenta paper.** En el portal de IBKR, entra a *Settings → Paper Trading Account* y créala. Te dan un usuario aparte, y el número de cuenta empieza con **DU**.
+2. **Instala TWS o IB Gateway** desde la página de IBKR. Al iniciar sesión, elige **Paper Trading**.
+3. **Activa la API.** En TWS: *File → Global Configuration → API → Settings*:
+   - ✅ *Enable ActiveX and Socket Clients*
+   - ❌ desmarca *Read-Only API*
+   - *Socket port*: **7497** (TWS paper) o **4002** (IB Gateway paper)
+   - *Trusted IPs*: 127.0.0.1
+4. **Datos de mercado.** El programa usa por defecto los datos de **Tradier** (`--feed tradier`). Así no necesitas pagar datos en IBKR para ver señales. Para que la cuenta paper llene órdenes con buenos precios, activa en el portal *Share real-time market data with paper account*. Si no tienes suscripción de opciones (OPRA), IBKR puede usar datos con retraso.
+5. En `.env`, revisa `IBKR_PORT` (7497 o 4002).
+
+### Uso
+
+```bash
+python -m market_signals ibkr-test                      # revisa conexión, cuenta, velas y opciones
+python -m market_signals paper --params '{"min_score":9}' --send
+python -m market_signals paper-journal                  # resumen de tus trades en paper
+```
+
+Por defecto el comando `paper` usa:
+- estrategia `karen_score`, solo CALLs, score de 9/10;
+- stop al **-25% de la prima** (`--stop-pct 25`);
+- **ganancia escalonada:** mitad en +25% y mitad en +50% (`--tiers 25:50,50:50`);
+- después del primer escalón, el stop sube a **breakeven** (`--no-breakeven` para desactivarlo);
+- busca entrada hasta las 12:00 ET y cierra lo que quede a la hora límite de la estrategia.
+
+Ejemplos de escalones:
+- `--tiers 20:50,40:25,80:25`: 50% en +20%, 25% en +40% y 25% en +80%.
+- `--tiers 30:50`: mitad en +30%; el resto corre hasta la hora límite.
+
+**Para escalonar necesitas al menos 2 contratos.** Con 1 contrato, todo sale en el primer escalón. Con $8,000 y riesgo de 1% ($80), un stop del 25% permite 2 contratos si la prima cuesta hasta $1.60.
+
+Cada trade se guarda en `data/paper_journal.csv`, para comparar el paper con el backtest.
+
+---
+
+## 6. Gestión de riesgo con una cuenta de $8,000
+
+- **El riesgo por trade viene configurado en 1% ($80).** El sistema calcula cuántos contratos puedes comprar si sales cuando la opción pierde `OPTION_STOP_PCT`% (25% por defecto). Si la prima es muy cara, te dice que no entres.
 - **Regla PDT.** En una cuenta de margen con menos de $25k, FINRA limita a 3 day trades en 5 días hábiles. FINRA ha estado cambiando esta regla, así que **confirma con Tradier cómo te aplica hoy**. Una alternativa es una **cuenta cash**: las opciones liquidan en T+1, no aplica PDT, pero solo puedes operar con dinero ya liquidado.
 - **Pérdida máxima diaria sugerida:** 2R ($160). Si la alcanzas, apaga todo hasta mañana.
 - **Opciones 0DTE:** el theta es brutal después del mediodía. Por eso las estrategias salen por tiempo (11:30–11:45 ET).
 
 ---
 
-## 5. Plan de trabajo
+## 7. Plan de trabajo
 
 - [x] Fase 1: conexión a Tradier, reporte pre-market, alertas en Telegram
 - [x] Fase 2: estrategias y backtest con validación walk-forward
 - [ ] Juntar mínimo 1 año de datos de SPY y QQQ y correr el backtest real
 - [ ] Traducir tus scans de TC2000 a estrategias nuevas en `market_signals/strategies.py`
-- [ ] 4–6 semanas de paper trading (sandbox) siguiendo las alertas
+- [x] Paper trading automático en Interactive Brokers con stop sobre la prima y salidas escalonadas
+- [ ] 4–6 semanas de paper trading con `karen_score` (9/10, solo CALLs)
 - [ ] Filtro de régimen: elegir la estrategia del día según el sesgo del pre-market
 - [ ] Contador automático de day trades (PDT) y bitácora de operaciones
 
@@ -225,7 +286,12 @@ market_signals/
   strategies.py  estrategias (aquí se agregan las tuyas)
   backtest.py    simulación, estadísticas mensuales, optimización, walk-forward
   options.py     elección de contrato y tamaño de posición
-  monitor.py     vigilancia en vivo
+  monitor.py     vigilancia en vivo (alertas)
+  options_sim.py simulación del precio de la opción (stop sobre prima, escalones)
+  paper.py       paper trading automático
+  ibkr.py        conexión con Interactive Brokers (solo paper)
+  feeds.py       datos de Tradier para el paper trading
+  polygon.py     descarga de historial
   data.py        descarga de barras
 tests/           pruebas automáticas (python -m pytest)
 ```
