@@ -70,6 +70,7 @@ class ExitPlan:
     tiers: tuple[tuple[float, float], ...] = ((0.25, 0.5), (0.5, 0.5))
     breakeven: bool = True
     name: str = ""
+    max_minutes: int | None = None  # salida por tiempo: si no funcionó en N minutos, fuera
 
     def label(self) -> str:
         if self.name:
@@ -78,7 +79,8 @@ class ExitPlan:
         rest = 1 - sum(f for _, f in self.tiers)
         if rest > 1e-9:
             parts.append(f"{int(round(rest * 100))}% al cierre por tiempo")
-        return ", ".join(parts) + (" | stop a breakeven" if self.breakeven else "")
+        return (", ".join(parts) + (" | stop a breakeven" if self.breakeven else "")
+                + (f" | máx {self.max_minutes} min" if self.max_minutes else ""))
 
 
 EXIT_PLANS = [
@@ -163,7 +165,7 @@ def simulate_option(ctx: DayContext, sig: Signal, strategy: str, plan: ExitPlan,
     exit_pos = len(ctx.o) - 1
     for i in range(e, len(ctx.o)):
         o, worst, best = _prices(ctx, i, K, iv, call, dte)
-        if i > e and ctx.times[i] >= sig.exit_by:
+        if i > e and (ctx.times[i] >= sig.exit_by or (plan.max_minutes and i - e >= plan.max_minutes)):
             pnl += remaining * (o * (1 - slip) / cost - 1)
             reasons.append("tiempo")
             remaining, exit_pos = 0.0, i

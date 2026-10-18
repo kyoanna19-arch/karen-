@@ -172,9 +172,9 @@ def cmd_options_study(args) -> None:
         print("Muy pocas señales para estudiar stops y salidas.")
         return
 
-    def run(plan, iv=args.iv):
-        trades = [t for t in (osim.simulate_option(c, s, args.strategy, plan, iv=iv, slip=args.slip)
-                              for c, s in pairs) if t]
+    def run(plan, iv=args.iv, delta=args.delta, dte=args.dte):
+        trades = [t for t in (osim.simulate_option(c, s, args.strategy, plan, iv=iv, delta=delta, dte=dte,
+                                                   slip=args.slip) for c, s in pairs) if t]
         st = bt.summarize(trades)
         avg_pct = sum(t.r for t in trades) * plan.stop_pct / len(trades) if trades else 0
         return trades, {"trades": st["trades"], "win_rate": st["win_rate"], "avg_%_prima": round(avg_pct * 100, 1),
@@ -183,7 +183,8 @@ def cmd_options_study(args) -> None:
                         "meses_+": st["pct_months_positive"], "peor_mes_r": st["worst_month_r"]}
 
     study = osim.stop_study(pairs, iv=args.iv, slip=args.slip)
-    print(f"\nPrima promedio estimada: ${study['avg_premium']} (IV {args.iv:.0%}, opción 0DTE delta ~0.45)")
+    print(f"\nPrima promedio estimada: ${study['avg_premium']} (IV {args.iv:.0%}, opción {args.dte}DTE "
+          f"delta ~{args.delta}) — las secciones 1 a 5 usan esta opción")
     print("\n== 1. ¿Cuánto cae la opción antes de ganar? ==")
     print(f"Peor caída de todos los trades (percentiles): {study['mae_percentiles']}")
     print("De los trades que llegaron a cada meta, % que un stop habría sacado ANTES:")
@@ -213,7 +214,26 @@ def cmd_options_study(args) -> None:
     print(pd.DataFrame(rows).to_string(index=False))
     print("Si el resultado cambia de signo según la IV, la ventaja es frágil.")
 
-    print(f"\n== 5. Mes por mes con el mejor plan ==")
+    print("\n== 6. ¿Qué opción conviene? (mejor plan, stop igual) ==")
+    print("DTE = días al vencimiento (0 = vence hoy). Delta 0.45 ≈ ATM; 0.60-0.70 = dentro del dinero (ITM).")
+    print("Más DTE y más delta = menos pérdida por tiempo (theta), pero prima más cara.")
+    rows = []
+    for dte in (0, 1, 2, 5):
+        for delta in (0.45, 0.60, 0.70):
+            rows.append({"DTE": dte, "delta": delta, **run(plan, delta=delta, dte=dte)[1]})
+    table = pd.DataFrame(rows)
+    print(table.to_string(index=False))
+    best_opt = table.sort_values("avg_r", ascending=False).iloc[0]
+    best_dte, best_delta = int(best_opt["DTE"]), float(best_opt["delta"])
+
+    print(f"\n== 7. Salida rápida: si no funcionó en N minutos, fuera ({best_dte}DTE delta {best_delta}) ==")
+    rows = []
+    for minutes in (10, 20, 30, 45, None):
+        timed = osim.ExitPlan(stop_pct=plan.stop_pct, tiers=plan.tiers, breakeven=plan.breakeven, max_minutes=minutes)
+        rows.append({"máx_minutos": minutes or "sin límite", **run(timed, delta=best_delta, dte=best_dte)[1]})
+    print(pd.DataFrame(rows).to_string(index=False))
+
+    print(f"\n== 5. Mes por mes con el mejor plan ({args.dte}DTE delta {args.delta}) ==")
     print(bt.monthly_table(trades).to_string())
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -360,6 +380,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--params", help="Parámetros JSON de la estrategia")
     p.add_argument("--stop", type=float, default=0.25, help="Stop sobre la prima (0.25 = 25%%)")
     p.add_argument("--iv", type=float, default=0.18, help="Volatilidad implícita supuesta (0.18 = 18%%)")
+    p.add_argument("--dte", type=int, default=0, help="Días al vencimiento de la opción (0 = vence hoy)")
+    p.add_argument("--delta", type=float, default=0.45, help="Delta de la opción (0.45 ≈ ATM, 0.70 = ITM)")
     p.add_argument("--slip", type=float, default=0.01, help="Costo de spread por lado (0.01 = 1%%)")
     p.add_argument("--risk", type=float, default=80, help="Dólares en riesgo por trade")
     p.add_argument("--out", default="reports")

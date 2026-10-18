@@ -77,3 +77,21 @@ def test_stop_study_and_plans_on_synthetic():
         trades = [osim.simulate_option(c, s, "k", plan) for c, s in pairs]
         assert all(t is None or t.r >= -1.0 - 1e-9 or "tiempo" in t.exit_reason or "stop" in t.exit_reason
                    for t in trades)
+
+
+def test_time_stop_exits_after_n_minutes():
+    ctx = make_day([(500, 500.05, 499.95, 500)] * 200)
+    plan = osim.ExitPlan(stop_pct=0.5, tiers=((0.5, 1.0),), breakeven=False, max_minutes=15)
+    t = osim.simulate_option(ctx, Signal(pos=0, direction=1, stop=0, exit_by=time(12, 0)), "x", plan, slip=0)
+    assert t.exit_reason == "tiempo" and t.exit_time == time(9, 46)  # entra 9:31, sale 15 min después
+    assert "máx 15 min" in plan.label()
+
+
+def test_more_dte_loses_less_to_theta():
+    ctx = make_day([(500, 500.05, 499.95, 500)] * 200)
+    plan = osim.ExitPlan(stop_pct=0.9, tiers=((2.0, 1.0),), breakeven=False)
+    sig = Signal(pos=0, direction=1, stop=0, exit_by=time(11, 30))
+    r0 = osim.simulate_option(ctx, sig, "x", plan, dte=0, slip=0).r
+    r5 = osim.simulate_option(ctx, sig, "x", plan, dte=5, slip=0).r
+    r0_itm = osim.simulate_option(ctx, sig, "x", plan, dte=0, delta=0.7, slip=0).r
+    assert r0 < r5 < 0 and r0 < r0_itm
