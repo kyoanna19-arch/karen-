@@ -24,8 +24,9 @@ class TradierFeed:
         row = hist.iloc[-1]
         return {"close": float(row["close"]), "high": float(row["high"]), "low": float(row["low"])}
 
-    def option_candidates(self, symbol: str, direction: int, price: float, today: date) -> list[dict]:
-        exp = choose_expiration(self.client.option_expirations(symbol), today)
+    def option_candidates(self, symbol: str, direction: int, price: float, today: date,
+                          min_dte: int = 0) -> list[dict]:
+        exp = choose_expiration(self.client.option_expirations(symbol), today, min_dte)
         if exp is None:
             return []
         chain = self.client.option_chain(symbol, exp)

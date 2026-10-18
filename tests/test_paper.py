@@ -39,7 +39,8 @@ class FakeFeed:
     def prev_day(self, symbol, today):
         return self.prev
 
-    def option_candidates(self, symbol, direction, price, today):
+    def option_candidates(self, symbol, direction, price, today, min_dte=0):
+        self.requested_dte = min_dte
         return [{"symbol": f"{symbol}-OPT", "underlying": symbol, "option_type": "call" if direction == 1 else "put",
                  "strike": round(price), "expiration": str(today), "bid": 1.18, "ask": 1.20,
                  "greeks": {"delta": 0.45 * direction}}]
@@ -157,7 +158,7 @@ def test_journal_written_and_summarized(contexts, tmp_path):
 
 def test_expensive_premium_skips_trade(contexts, tmp_path):
     ctx, feed = day_setup(contexts, 0)
-    feed.option_candidates = lambda *a: [{"symbol": "X", "underlying": "SPY", "option_type": "call",
+    feed.option_candidates = lambda *a, **k: [{"symbol": "X", "underlying": "SPY", "option_type": "call",
                                           "strike": 1, "expiration": "x", "bid": 9.9, "ask": 10.0, "greeks": None},
                                          {"symbol": "Y", "underlying": "SPY", "option_type": "put",
                                           "strike": 1, "expiration": "x", "bid": 9.9, "ask": 10.0, "greeks": None}]
@@ -236,3 +237,20 @@ def test_premium_plan_scales_out_and_moves_stop(contexts, tmp_path):
             assert trade.pnl == pytest.approx(sum(expected_pnl[r] * 100 for r in reasons))
         assert trade.qty == 2
     assert any(r.startswith("+25%") for r in seen) and "stop opción" in seen
+
+
+def test_paper_time_stop_and_option_choice(contexts, tmp_path):
+    from market_signals.options_sim import ExitPlan
+    plan = ExitPlan(stop_pct=0.25, tiers=((5.0, 1.0),), breakeven=False, max_minutes=10)  # escalón imposible
+    ctx, feed = day_setup(contexts, 0)
+    broker = FakeBroker(feed, price_stops=False)
+    clock = Clock(datetime.combine(ctx.day, datetime.min.time()).replace(hour=9, minute=30, second=5))
+    trader = PaperTrader(feed, broker, SETTINGS, lambda m: None, "SPY", "orb", {}, now=clock.now,
+                         sleep=clock.sleep, poll_seconds=60, journal=tmp_path / "j.csv", exit_plan=plan,
+                         min_dte=2, target_delta=0.65)
+    trade = trader.run()
+    assert feed.requested_dte == 2
+    assert trade.exit_reason == "no funcionó en 10 min"
+    entry = datetime.strptime(trade.signal_time, "%H:%M")
+    exit_ = datetime.strptime(trade.exit_time, "%H:%M")
+    assert 10 <= (exit_ - entry).seconds / 60 <= 12

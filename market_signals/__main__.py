@@ -303,11 +303,12 @@ def cmd_paper(args) -> None:
         plan = None
         if args.exit_mode == "premium":
             from .options_sim import ExitPlan
-            plan = ExitPlan(stop_pct=args.stop_pct / 100, tiers=parse_tiers(args.tiers), breakeven=args.breakeven)
+            plan = ExitPlan(stop_pct=args.stop_pct / 100, tiers=parse_tiers(args.tiers), breakeven=args.breakeven,
+                            max_minutes=args.max_minutes or None)
             notify(f"Salida: stop -{args.stop_pct:.0f}% de la prima | {plan.label()}")
         PaperTrader(feed, broker, settings, notify, args.symbol.upper(), args.strategy, params,
                     now=now_et, sleep=broker.sleep, poll_seconds=args.poll, until=args.until,
-                    exit_plan=plan).run()
+                    exit_plan=plan, min_dte=args.dte, target_delta=args.delta).run()
     finally:
         broker.disconnect()
 
@@ -402,6 +403,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="Escalones ganancia%%:contratos%%, ej. '25:50,50:50' = mitad en +25%%, mitad en +50%%")
     p.add_argument("--breakeven", action=argparse.BooleanOptionalAction, default=True,
                    help="Subir el stop a breakeven después del primer escalón")
+    p.add_argument("--dte", type=int, default=1, help="Días mínimos al vencimiento (0 = vence hoy)")
+    p.add_argument("--delta", type=float, default=0.65, help="Delta buscado (0.45 ≈ ATM, 0.65 = ITM)")
+    p.add_argument("--max-minutes", type=int, default=30, help="Cerrar si no funcionó en N minutos (0 = sin límite)")
     p.add_argument("--feed", choices=["tradier", "ibkr"], default="tradier",
                    help="De dónde salen las velas y precios de opciones (las órdenes siempre van a IBKR)")
     p.add_argument("--until", default="12:00", help="Hora ET límite para buscar entrada")

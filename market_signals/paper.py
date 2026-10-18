@@ -32,7 +32,8 @@ JOURNAL = Path("data/paper_journal.csv")
 class Feed(Protocol):
     def minute_bars(self, symbol: str, now: datetime) -> pd.DataFrame: ...
     def prev_day(self, symbol: str, today: date) -> dict: ...
-    def option_candidates(self, symbol: str, direction: int, price: float, today: date) -> list[dict]: ...
+    def option_candidates(self, symbol: str, direction: int, price: float, today: date,
+                          min_dte: int = 0) -> list[dict]: ...
 
 
 class Broker(Protocol):
@@ -97,7 +98,8 @@ class PaperTrader:
     def __init__(self, feed: Feed, broker: Broker, settings: Settings, notify: Callable[[str], None],
                  symbol: str, strategy: str, params: dict, now: Callable[[], datetime],
                  sleep: Callable[[float], None] = systime.sleep, poll_seconds: float = 15,
-                 until: str = "12:00", journal: Path = JOURNAL, exit_plan: ExitPlan | None = None):
+                 until: str = "12:00", journal: Path = JOURNAL, exit_plan: ExitPlan | None = None,
+                 min_dte: int = 0, target_delta: float = 0.45):
         self.feed, self.broker, self.settings, self.notify = feed, broker, settings, notify
         self.symbol, self.strategy, self.params = symbol, strategy, params
         self.now, self.sleep, self.poll_seconds = now, sleep, poll_seconds
@@ -111,6 +113,8 @@ class PaperTrader:
         self.target = 0.0
         self.entry_price = 0.0
         self.plan = exit_plan
+        self.min_dte, self.target_delta = min_dte, target_delta
+        self.entry_time: datetime | None = None
         self.fills: list[tuple[int, float, str]] = []  # (contratos, precio, motivo)
         self.remaining = 0
         self.tier_orders: list[list] = []  # [orden, contratos, ganancia, llenada]
@@ -153,8 +157,9 @@ class PaperTrader:
             return False
         self.target = sig.target_price if sig.target_price is not None else price + sig.direction * sig.target_r * risk
         side = "CALL" if sig.direction == 1 else "PUT"
-        option = pick_contract(self.feed.option_candidates(self.symbol, sig.direction, price, today),
-                               sig.direction, price)
+        option = pick_contract(self.feed.option_candidates(self.symbol, sig.direction, price, today,
+                                                           min_dte=self.min_dte),
+                               sig.direction, price, target_delta=self.target_delta)
         if option is None:
             self.notify(f"PAPER {self.symbol}: señal {side} pero sin contrato con spread aceptable. No entro.")
             return False
@@ -171,10 +176,13 @@ class PaperTrader:
             return False
         qty, fill = filled
         self.remaining = qty
+        self.entry_time = self.now()
         stop_price = fill * (1 - stop_pct / 100)
         self.stop_handle = self.broker.protective_stop(option, qty, stop_price)
         tiers_text = ""
         if self.plan:
+            if self.plan.max_minutes:
+                tiers_text += f"\nSi no funciona en {self.plan.max_minutes} min, se cierra"
             for q, gain in split_qty(qty, self.plan.tiers):
                 if q > 0:
                     self.tier_orders.append([self.broker.sell_limit(option, q, fill * (1 + gain)), q, gain, False])
@@ -232,6 +240,8 @@ class PaperTrader:
             closed_after_limit = any(t.time() >= sig.exit_by for t in regular.index[self.checked_pos + 1:])
             if now.time() >= sig.exit_by or closed_after_limit:
                 return self._close(None, "tiempo", now)
+            if self.plan.max_minutes and now - self.entry_time >= timedelta(minutes=self.plan.max_minutes):
+                return self._close(None, f"no funcionó en {self.plan.max_minutes} min", now)
             return False
 
         d = sig.direction

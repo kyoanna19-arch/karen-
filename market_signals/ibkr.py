@@ -108,7 +108,8 @@ class IBKRBroker:
         b = prior[-1]
         return {"close": b.close, "high": b.high, "low": b.low}
 
-    def option_candidates(self, symbol: str, direction: int, price: float, today: date) -> list[dict]:
+    def option_candidates(self, symbol: str, direction: int, price: float, today: date,
+                          min_dte: int = 0) -> list[dict]:
         from ib_async import Option
         stock = self._stock(symbol)
         chains = self.ib.reqSecDefOptParams(stock.symbol, "", stock.secType, stock.conId)
@@ -116,10 +117,10 @@ class IBKRBroker:
         if chain is None:
             return []
         expirations = [f"{e[:4]}-{e[4:6]}-{e[6:]}" for e in chain.expirations]
-        exp = choose_expiration(expirations, today)
+        exp = choose_expiration(expirations, today, min_dte)
         if exp is None:
             return []
-        strikes = sorted(chain.strikes, key=lambda s: abs(s - price))[:8]
+        strikes = sorted(chain.strikes, key=lambda s: abs(s - price))[:12]  # alcanza para delta 0.30-0.75
         right = "C" if direction == 1 else "P"
         contracts = [Option(symbol, exp.replace("-", ""), s, right, "SMART", tradingClass=chain.tradingClass,
                             multiplier=chain.multiplier, currency="USD") for s in strikes]

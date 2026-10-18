@@ -418,6 +418,72 @@ def karen_score(ctx: DayContext, min_score: int = 9, stop_mode: str = "candle5",
     return None
 
 
+def karen_setups(ctx: DayContext, min_score: int = 10, last_entry: str = "11:55") -> list[Signal]:
+    """Todas las veces del día en que se cumple el score (cada una es un 'setup')."""
+    key = ("karen_setups", min_score, last_entry)
+    if key not in ctx.cache:
+        setups, start = [], _t("09:30")
+        while True:
+            sig = karen_score(ctx, min_score=min_score, start=start, last_entry=last_entry)
+            if sig is None:
+                break
+            setups.append(sig)
+            if sig.pos + 1 >= len(ctx.times):
+                break
+            start = ctx.times[sig.pos + 1]
+        ctx.cache[key] = setups
+    return ctx.cache[key]
+
+
+def karen_pullback(ctx: DayContext, min_score: int = 10, pullback_to: str = "ema9_1m", wait_minutes: int = 20,
+                   stop_mode: str = "pullback", target_r: float = 1.5, last_entry: str = "11:55",
+                   exit_by: str = "12:15") -> Signal | None:
+    """Estrategia de Karen con entrada en el RETROCESO, en vez de en la ruptura.
+
+    1. Setup: se cumple karen_score (gates + score >= min_score).
+    2. Se espera a que el precio retroceda hasta `pullback_to`:
+         'ema9_1m'     -> la EMA 9 de 1 minuto
+         'mid_candle5' -> la mitad de la vela de 5m del setup
+    3. Entrada: una vela de 1m cierra por encima del máximo de la anterior (retoma la subida)
+       y por encima del nivel del retroceso.
+    4. Se cancela si el precio rompe el mínimo de la vela de 5m del setup o si pasan
+       `wait_minutes` sin entrada; entonces se busca el siguiente setup del día.
+    Stop: 'pullback' = mínimo del retroceso | 'setup' = mínimo de la vela de 5m del setup.
+    """
+    k1, k5 = candles(ctx, 1), candles(ctx, 5)
+    last = _t(last_entry)
+    scanned_until = -1
+    for setup in karen_setups(ctx, min_score, last_entry):
+        if setup.pos <= scanned_until:
+            continue
+        b = _last_closed(k5, setup.pos)
+        setup_low, setup_high = float(k5["low"][b]), float(k5["high"][b])
+        mid = (setup_low + setup_high) / 2
+        touched, pull_low = False, None
+        end = min(setup.pos + wait_minutes, ctx.signal_end - 1)
+        i = setup.pos
+        for i in range(setup.pos + 1, end + 1):
+            if ctx.times[i] > last:
+                return None
+            if ctx.l[i] <= setup_low:
+                break  # la idea falló: rompió el mínimo de la vela del setup
+            level = mid if pullback_to == "mid_candle5" else float(k1["ema9"][_last_closed(k1, i - 1)])
+            if not touched:
+                if ctx.l[i] <= level:
+                    touched, pull_low = True, float(ctx.l[i])
+                continue
+            pull_low = min(pull_low, float(ctx.l[i]))
+            if ctx.c[i] > ctx.h[i - 1] and ctx.c[i] > level:
+                stop = pull_low if stop_mode == "pullback" else setup_low
+                if stop >= ctx.c[i]:
+                    break
+                return Signal(i, 1, stop, target_r=target_r, exit_by=_t(exit_by),
+                              note=f"Retroceso tras setup de las {ctx.times[setup.pos]:%H:%M} | {setup.note}",
+                              conditions=setup.conditions)
+        scanned_until = i
+    return None
+
+
 @dataclass(frozen=True)
 class StrategySpec:
     fn: Callable[..., Signal | None]
@@ -479,5 +545,18 @@ STRATEGIES: dict[str, StrategySpec] = {
         "también PUTs": {"sides": "both"},
         "solo hasta 10:30": {"last_entry": "10:30"},
         "desde 9:45": {"start": "09:45"},
+    }),
+    "karen_pullback": StrategySpec(karen_pullback, "Score de Karen con entrada en el retroceso", {
+        "min_score": [9, 10],
+        "pullback_to": ["ema9_1m", "mid_candle5"],
+        "wait_minutes": [10, 20, 30],
+        "stop_mode": ["pullback", "setup"],
+        "target_r": [1.0, 1.5, 2.0],
+    }, ablations={
+        "score 9": {"min_score": 9},
+        "retroceso a mitad de vela 5m": {"pullback_to": "mid_candle5"},
+        "esperar máx 10 min": {"wait_minutes": 10},
+        "esperar máx 30 min": {"wait_minutes": 30},
+        "stop en vela del setup": {"stop_mode": "setup"},
     }),
 }

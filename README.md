@@ -72,6 +72,7 @@ python -m market_signals backtest --data data/SPY_1min.csv --strategy orb --para
 | `premarket_break` | El precio cruza el máximo o mínimo del pre-market |
 | `vwap_cross` | Recupera o pierde el VWAP con las EMAs 9/20 a favor |
 | `gap_fade` | Apuesta a que el gap de apertura se rellena |
+| `karen_pullback` | Score de Karen, pero **entra en el retroceso** después del setup y no en la ruptura |
 | `karen_score` | **Estrategia del bot**: 3 gates obligatorios + score de 10 condiciones en 1m/5m/15m |
 | `ema_vwap_rsi` | **Tu estrategia**: EMA 9/21, vela sólida que rompe los promedios, VWAP girado, RSI 60/40 y volumen |
 
@@ -236,7 +237,9 @@ python -m market_signals paper --params min_score=9 --send
 python -m market_signals paper-journal                  # resumen de tus trades en paper
 ```
 
-Por defecto el comando `paper` usa:
+Por defecto el comando `paper` usa (según lo que salió mejor en `options-study`):
+- opción con **al menos 1 día al vencimiento** (`--dte 1`) y **delta ~0.65** (`--delta 0.65`, dentro del dinero);
+- **salida si no funcionó en 30 minutos** (`--max-minutes 30`, 0 = sin límite);
 - estrategia `karen_score`, solo CALLs, score de 9/10;
 - stop al **-25% de la prima** (`--stop-pct 25`);
 - **ganancia escalonada:** mitad en +25% y mitad en +50% (`--tiers 25:50,50:50`);
@@ -246,6 +249,8 @@ Por defecto el comando `paper` usa:
 Ejemplos de escalones:
 - `--tiers 20:50,40:25,80:25`: 50% en +20%, 25% en +40% y 25% en +80%.
 - `--tiers 30:50`: mitad en +30%; el resto corre hasta la hora límite.
+
+**Ojo con el tamaño:** una opción ITM de 1–2 días cuesta más (en SPY, unos $4–6). Con stop de 25%, un contrato arriesga $100–150, más que el 1% de $8,000 ($80), y el sistema no entraría. Para practicar en paper, sube `RISK_PER_TRADE_PCT=2` en `.env`.
 
 **Para escalonar necesitas al menos 2 contratos.** Con 1 contrato, todo sale en el primer escalón. Con $8,000 y riesgo de 1% ($80), un stop del 25% permite 2 contratos si la prima cuesta hasta $1.60.
 
