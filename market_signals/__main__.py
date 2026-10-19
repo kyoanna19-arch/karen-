@@ -161,6 +161,38 @@ def cmd_history(args) -> None:
         print(f"Listo: {path}" if path else f"No se descargó nada de {symbol}.")
 
 
+def cmd_compare(args) -> None:
+    from .compare import compare
+    settings = load_settings()
+    symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
+    risk = args.risk or settings.account_size * settings.risk_per_trade_pct / 100
+    pd.set_option("display.width", 250)
+    pd.set_option("display.max_columns", 30)
+    print(f"Estrategia {args.strategy} {parse_params(args.params) or '(configuración por defecto)'}")
+    print(f"Opción: {args.dte} días al vencimiento, delta {args.delta} | salida por niveles del activo")
+    print(f"Cuenta ${settings.account_size:,.0f}, riesgo ${risk:,.0f} por trade, "
+          f"tope {settings.max_position_pct:.0f}% en primas\n")
+    table, missing = compare(symbols, strategy=args.strategy, params=parse_params(args.params), dte=args.dte,
+                             delta=args.delta, risk=risk, account=settings.account_size,
+                             max_position_pct=settings.max_position_pct, iv_override=args.iv,
+                             slip_override=args.slip)
+    if missing:
+        print(f"⚠️ Sin datos (descárgalos con 'history'): {', '.join(missing)}\n")
+    if table.empty:
+        return
+    print(table.to_string(index=False))
+    print("""
+Cómo leerlo:
+  ETF_avg_r  = resultado por trade operando el activo directo (ya con costos)
+  opc_avg_r  = resultado por trade con la opción ITM, saliendo por los niveles del activo
+  avg_r_AÑO  = lo mismo separado por año: si es positivo en los dos años, es más confiable
+  cabe_1_contrato = si 1 contrato cuesta menos que tu tope de primas
+Una ventaja real debería salir positiva en VARIOS activos, no solo en uno.""")
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    table.to_csv(out / "comparacion.csv", index=False)
+
+
 def cmd_options_study(args) -> None:
     from . import options_sim as osim
     contexts = _load_contexts(args)
@@ -392,6 +424,18 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--pause", type=float, default=12.5,
                    help="Segundos entre consultas (12.5 para el plan gratuito, 0 si pagas)")
     p.set_defaults(func=cmd_history)
+
+    p = sub.add_parser("compare", help="Probar la misma estrategia en varios activos (una sola tabla)")
+    p.add_argument("--symbols", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")
+    p.add_argument("--strategy", choices=list(STRATEGIES), default="karen_pullback")
+    p.add_argument("--params", help="Parámetros de la estrategia (por defecto, la configuración elegida)")
+    p.add_argument("--dte", type=int, default=2, help="Días al vencimiento de la opción")
+    p.add_argument("--delta", type=float, default=0.70, help="Delta de la opción")
+    p.add_argument("--risk", type=float, help="Dólares en riesgo por trade (por defecto, el de tu .env)")
+    p.add_argument("--iv", type=float, help="Forzar una misma volatilidad para todos (por defecto, la típica de cada uno)")
+    p.add_argument("--slip", type=float, help="Forzar un mismo costo por lado (por defecto 0.02 ETFs, 0.05 acciones)")
+    p.add_argument("--out", default="reports")
+    p.set_defaults(func=cmd_compare)
 
     p = sub.add_parser("options-study", help="Estudiar stop sobre la prima y salidas escalonadas")
     src = p.add_mutually_exclusive_group(required=True)
