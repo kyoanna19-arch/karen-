@@ -183,10 +183,12 @@ def cmd_compare(args) -> None:
     print(table.to_string(index=False))
     print("""
 Cómo leerlo:
+  estructura = CALL: solo el CALL ITM | spread objetivo: CALL ITM + vender el strike del objetivo
+               spread ATM: CALL ITM + vender el strike más cercano al precio
   ETF_avg_r  = resultado por trade operando el activo directo (ya con costos)
-  opc_avg_r  = resultado por trade con la opción ITM, saliendo por los niveles del activo
+  avg_r      = resultado por trade con esa estructura, saliendo por los niveles del activo
   avg_r_AÑO  = lo mismo separado por año: si es positivo en los dos años, es más confiable
-  cabe_1_contrato = si 1 contrato cuesta menos que tu tope de primas
+  costo_contrato / cabe = cuánto cuesta 1 contrato y si entra en tu tope de primas
 Una ventaja real debería salir positiva en VARIOS activos, no solo en uno.""")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

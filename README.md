@@ -218,6 +218,22 @@ El costo por operación es `--slip` dólares por lado (por defecto 0.02 = 2 cent
 
 ---
 
+## 4b. Comparar varios activos y estructuras (`compare`)
+
+Prueba **la misma configuración fija** en varios activos y con tres estructuras de opción, y muestra todo en una sola tabla:
+- **CALL:** solo el CALL ITM (delta ~0.70).
+- **spread objetivo:** CALL ITM + vender el CALL del strike del objetivo (spread de débito, más barato).
+- **spread ATM:** CALL ITM + vender el CALL más cercano al precio (todavía más barato, más angosto).
+
+```bash
+python -m market_signals history --symbol NVDA,AAPL,META,TSLA,MSFT,AMD --years 2
+python -m market_signals compare --symbols SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD
+```
+
+Usa una volatilidad típica para cada activo (por ejemplo 20% en QQQ y 58% en TSLA) y un costo de 2 centavos por lado en ETFs y 5 en acciones (en los spreads se paga por cada pata). La columna `cabe` dice si un contrato entra en tu tope de primas (`MAX_POSITION_PCT`).
+
+---
+
 ## 5. Paper trading con Interactive Brokers
 
 El programa detecta la señal, compra la opción, pone el stop y las ventas escalonadas, y cierra lo que quede a la hora límite. **Solo funciona con cuentas paper:** si detecta una cuenta real o un puerto de cuenta real, se niega a operar.

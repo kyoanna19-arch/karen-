@@ -258,6 +258,78 @@ def simulate_option_levels(ctx: DayContext, sig: Signal, strategy: str, iv: floa
                  gap_pct=round(ctx.gap_pct, 3), note=sig.note, conditions=sig.conditions)
 
 
+def strike_step(price: float, etf: bool = True) -> float:
+    """Separación típica entre strikes: $1 en ETFs; en acciones depende del precio."""
+    if etf or price < 200:
+        return 1.0
+    return 2.5 if price < 400 else 5.0
+
+
+def simulate_spread_levels(ctx: DayContext, sig: Signal, strategy: str, iv: float = 0.18, delta: float = 0.70,
+                           dte: int = 2, slip: float = 0.02, short: str = "target",
+                           step: float | None = None, etf: bool = True) -> Trade | None:
+    """Spread de débito: compra la opción ITM (delta `delta`) y vende otra más afuera.
+    short='target': vende el strike del objetivo de la estrategia | short='atm': el strike más cercano al precio.
+    Sale cuando el activo toca el stop o el objetivo (o por tiempo). Se paga `slip` por pata y por lado.
+    1R = lo que pierde el spread si el activo toca el stop."""
+    e = sig.pos + 1
+    if e >= len(ctx.o):
+        return None
+    d = sig.direction
+    call = d == 1
+    f = bs_call if call else bs_put
+    S0 = float(ctx.o[e])
+    step = step or strike_step(S0, etf)
+    T0 = years_left(ctx.times[e], dte)
+    K1 = strike_for_delta(S0, T0, iv, delta, call, step)
+    risk_u = (S0 - sig.stop) * d
+    if risk_u <= 0:
+        return None
+    target_u = sig.target_price if sig.target_price is not None else S0 + d * (sig.target_r or 1.5) * risk_u
+    if (target_u - S0) * d <= 0:
+        return None
+    if short == "atm":
+        K2 = round(S0 / step) * step
+    else:
+        K2 = math.ceil(target_u / step) * step if call else math.floor(target_u / step) * step
+    if (K2 - K1) * d < step:
+        K2 = K1 + d * step  # al menos un strike de ancho
+
+    def value(S: float, T: float) -> float:
+        return f(S, K1, T, iv) - f(S, K2, T, iv)
+
+    cost = value(S0, T0) + 2 * slip
+    width = abs(K2 - K1)
+    if cost >= width or cost <= 0.05:
+        return None  # el spread no tiene sentido (cuesta más que su valor máximo)
+    risk = cost - max(value(sig.stop, T0) - 2 * slip, 0.0)
+    if risk <= 0:
+        return None
+    exit_value, exit_pos, reason = None, len(ctx.o) - 1, "cierre"
+    for i in range(e, len(ctx.o)):
+        T = years_left(ctx.times[i], dte)
+        if i > e and ctx.times[i] >= sig.exit_by:
+            exit_value, exit_pos, reason = value(ctx.o[i], T), i, "tiempo"
+            break
+        worst, best = (ctx.l[i], ctx.h[i]) if call else (ctx.h[i], ctx.l[i])
+        if (worst - sig.stop) * d <= 0:
+            level = ctx.o[i] if i > e and (ctx.o[i] - sig.stop) * d <= 0 else sig.stop
+            exit_value, exit_pos, reason = value(level, T), i, "stop"
+            break
+        if (best - target_u) * d >= 0:
+            exit_value, exit_pos, reason = value(target_u, T), i, "objetivo"
+            break
+    if exit_value is None:
+        last = len(ctx.o) - 1
+        exit_value = value(ctx.c[last], years_left(ctx.times[last], dte))
+    exit_value = max(exit_value - 2 * slip, 0.0)
+    r = (exit_value - cost) / risk
+    return Trade(day=ctx.day, strategy=strategy, direction=d, entry_time=ctx.times[e], entry=round(cost, 3),
+                 stop=round(cost - risk, 3), target=float(K2), exit_time=ctx.times[exit_pos],
+                 exit=round(exit_value, 3), exit_reason=reason, r=round(r, 3), r_net=round(r, 3),
+                 gap_pct=round(ctx.gap_pct, 3), note=f"spread {K1:g}/{K2:g} | {sig.note}", conditions=sig.conditions)
+
+
 def signals_for(contexts: list[DayContext], strategy_fn, params: dict) -> list[tuple[DayContext, Signal]]:
     out = []
     for ctx in contexts:
