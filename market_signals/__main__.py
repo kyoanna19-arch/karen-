@@ -182,7 +182,7 @@ def cmd_options_study(args) -> None:
                         "total_r": st["total_r"], "max_dd_r": st["max_drawdown_r"],
                         "meses_+": st["pct_months_positive"], "peor_mes_r": st["worst_month_r"]}
 
-    study = osim.stop_study(pairs, iv=args.iv, slip=args.slip)
+    study = osim.stop_study(pairs, iv=args.iv, slip=args.slip, delta=args.delta, dte=args.dte)
     print(f"\nPrima promedio estimada: ${study['avg_premium']} (IV {args.iv:.0%}, opción {args.dte}DTE "
           f"delta ~{args.delta}) — las secciones 1 a 5 usan esta opción")
     print("\n== 1. ¿Cuánto cae la opción antes de ganar? ==")
@@ -232,6 +232,27 @@ def cmd_options_study(args) -> None:
         timed = osim.ExitPlan(stop_pct=plan.stop_pct, tiers=plan.tiers, breakeven=plan.breakeven, max_minutes=minutes)
         rows.append({"máx_minutos": minutes or "sin límite", **run(timed, delta=best_delta, dte=best_dte)[1]})
     print(pd.DataFrame(rows).to_string(index=False))
+
+    print("\n== 8. Salir por los niveles del ETF (stop y objetivo de la estrategia, como en el backtest) ==")
+    print("1R = lo que pierde la opción si el ETF toca el stop. Compara avg_r con las secciones anteriores.")
+
+    def run_levels(dte, delta, minutes=None):
+        trades = [t for t in (osim.simulate_option_levels(c, s, args.strategy, iv=args.iv, delta=delta, dte=dte,
+                                                          slip=args.slip, max_minutes=minutes) for c, s in pairs) if t]
+        st = bt.summarize(trades)
+        return trades, {"trades": st["trades"], "win_rate": st["win_rate"], "avg_r": st["avg_r"],
+                        f"$_por_trade_riesgo_{args.risk:.0f}": round(st["avg_r"] * args.risk, 2),
+                        "total_r": st["total_r"], "max_dd_r": st["max_drawdown_r"],
+                        "meses_+": st["pct_months_positive"], "peor_mes_r": st["worst_month_r"]}
+
+    rows = []
+    for dte, delta in ((0, 0.45), (0, 0.70), (1, 0.65), (2, 0.70), (5, 0.70)):
+        for minutes in (None, 30):
+            rows.append({"DTE": dte, "delta": delta, "máx_min": minutes or "-", **run_levels(dte, delta, minutes)[1]})
+    print(pd.DataFrame(rows).to_string(index=False))
+    level_trades = run_levels(args.dte, args.delta)[0]
+    print(f"\nMes por mes saliendo por niveles del ETF ({args.dte}DTE delta {args.delta}):")
+    print(bt.monthly_table(level_trades).to_string())
 
     print(f"\n== 5. Mes por mes con el mejor plan ({args.dte}DTE delta {args.delta}) ==")
     print(bt.monthly_table(trades).to_string())
@@ -377,13 +398,14 @@ def main(argv: list[str] | None = None) -> None:
     src.add_argument("--data", help="CSV de barras de 1 minuto")
     src.add_argument("--demo", action="store_true", help="Usar datos sintéticos de prueba")
     p.add_argument("--demo-days", type=int, default=250)
-    p.add_argument("--strategy", choices=list(STRATEGIES), default="karen_score")
+    p.add_argument("--strategy", choices=list(STRATEGIES), default="karen_pullback")
     p.add_argument("--params", help="Parámetros JSON de la estrategia")
     p.add_argument("--stop", type=float, default=0.25, help="Stop sobre la prima (0.25 = 25%%)")
     p.add_argument("--iv", type=float, default=0.18, help="Volatilidad implícita supuesta (0.18 = 18%%)")
     p.add_argument("--dte", type=int, default=0, help="Días al vencimiento de la opción (0 = vence hoy)")
     p.add_argument("--delta", type=float, default=0.45, help="Delta de la opción (0.45 ≈ ATM, 0.70 = ITM)")
-    p.add_argument("--slip", type=float, default=0.01, help="Costo de spread por lado (0.01 = 1%%)")
+    p.add_argument("--slip", type=float, default=0.02,
+                   help="Costo por lado en dólares: medio spread + deslizamiento (0.02 = 2 centavos)")
     p.add_argument("--risk", type=float, default=80, help="Dólares en riesgo por trade")
     p.add_argument("--out", default="reports")
     p.set_defaults(func=cmd_options_study)
@@ -394,10 +416,11 @@ def main(argv: list[str] | None = None) -> None:
 
     p = sub.add_parser("paper", help="Operar automáticamente en la cuenta PAPER de IBKR")
     p.add_argument("--symbol", default="SPY")
-    p.add_argument("--strategy", choices=list(STRATEGIES), default="karen_score")
+    p.add_argument("--strategy", choices=list(STRATEGIES), default="karen_pullback")
     p.add_argument("--params", help="Parámetros JSON (usa los que ganaron en el backtest)")
-    p.add_argument("--exit-mode", choices=["premium", "underlying"], default="premium",
-                   help="premium: stop y escalones sobre la prima | underlying: stop/objetivo en el precio de SPY")
+    p.add_argument("--exit-mode", choices=["underlying", "premium"], default="underlying",
+                   help="underlying: stop/objetivo en el precio del ETF (como el backtest) | "
+                        "premium: stop y escalones sobre la prima")
     p.add_argument("--stop-pct", type=float, default=25, help="Stop sobre la prima en %% (modo premium)")
     p.add_argument("--tiers", default="25:50,50:50",
                    help="Escalones ganancia%%:contratos%%, ej. '25:50,50:50' = mitad en +25%%, mitad en +50%%")

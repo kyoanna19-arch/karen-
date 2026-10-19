@@ -95,3 +95,22 @@ def test_more_dte_loses_less_to_theta():
     r5 = osim.simulate_option(ctx, sig, "x", plan, dte=5, slip=0).r
     r0_itm = osim.simulate_option(ctx, sig, "x", plan, dte=0, delta=0.7, slip=0).r
     assert r0 < r5 < 0 and r0 < r0_itm
+
+
+def test_option_exits_on_etf_levels():
+    # entra 9:31 en 500; stop 499; objetivo 2R = 502
+    up = make_day([(500, 500.05, 499.95, 500)] * 2 + [(500, 500.2, 499.8, 500.1)] + [(500.1, 502.5, 500.1, 502.4)] * 50)
+    sig = Signal(pos=0, direction=1, stop=499, target_r=2, exit_by=time(12, 0))
+    t = osim.simulate_option_levels(up, sig, "x", delta=0.65, dte=1, slip=0)
+    assert t.exit_reason == "objetivo" and 1.5 < t.r < 2.6  # cerca de 2R (la gamma suma un poco)
+    down = make_day([(500, 500.05, 499.95, 500)] * 2 + [(500, 500, 498.5, 498.6)] * 50)
+    t2 = osim.simulate_option_levels(down, sig, "x", delta=0.65, dte=1, slip=0)
+    assert t2.exit_reason == "stop" and t2.r == pytest.approx(-1.0, abs=0.05)
+
+
+def test_stop_study_uses_chosen_option():
+    ctx = make_day([(500, 500.05, 499.95, 500)] * 200)
+    sig = Signal(pos=0, direction=1, stop=0, exit_by=time(11, 0))
+    atm = osim.stop_study([(ctx, sig)])["avg_premium"]
+    itm = osim.stop_study([(ctx, sig)], delta=0.65, dte=1)["avg_premium"]
+    assert itm > atm * 1.5

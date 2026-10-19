@@ -194,7 +194,7 @@ Si el plan gratis no alcanza para algunos meses antiguos, el comando los salta y
 
 ---
 
-## 4. Stop sobre la prima y ganancia escalonada (`options-study`)
+## 4. Estudio de opciones (`options-study`)
 
 El backtest normal mide en el precio de SPY. Para probar reglas sobre la **prima de la opción** (como un stop del 25%), el sistema estima el precio de una opción 0DTE con delta ~0.45 minuto a minuto, usando Black-Scholes. El modelo incluye la pérdida por tiempo (theta).
 
@@ -208,6 +208,11 @@ Te muestra cinco cosas:
 3. **Planes de salida escalonada** con tu stop (por defecto -25%). Por ejemplo, "mitad en +25% y mitad en +50%", con o sin stop a breakeven.
 4. **Sensibilidad a la volatilidad.** Repite el mejor plan con IV de 12%, 18%, 25% y 35%. Si el resultado cambia de signo, la ventaja es frágil.
 5. **Mes por mes** con el mejor plan.
+6. **Qué contrato conviene:** vencimiento (0, 1, 2 o 5 días) y delta (0.45, 0.60, 0.70).
+7. **Salida rápida:** cerrar si no funcionó en N minutos.
+8. **Salir por los niveles del ETF** (stop y objetivo de la estrategia), como en el backtest.
+
+El costo por operación es `--slip` dólares por lado (por defecto 0.02 = 2 centavos de medio spread + deslizamiento).
 
 ⚠️ Es una estimación: la volatilidad real cambia durante el día. El paper trading confirma con precios reales.
 
@@ -237,14 +242,15 @@ python -m market_signals paper --params min_score=9 --send
 python -m market_signals paper-journal                  # resumen de tus trades en paper
 ```
 
-Por defecto el comando `paper` usa (según lo que salió mejor en `options-study`):
-- opción con **al menos 1 día al vencimiento** (`--dte 1`) y **delta ~0.65** (`--delta 0.65`, dentro del dinero);
-- **salida si no funcionó en 30 minutos** (`--max-minutes 30`, 0 = sin límite);
-- estrategia `karen_score`, solo CALLs, score de 9/10;
-- stop al **-25% de la prima** (`--stop-pct 25`);
-- **ganancia escalonada:** mitad en +25% y mitad en +50% (`--tiers 25:50,50:50`);
-- después del primer escalón, el stop sube a **breakeven** (`--no-breakeven` para desactivarlo);
-- busca entrada hasta las 12:00 ET y cierra lo que quede a la hora límite de la estrategia.
+Por defecto el comando `paper` usa la configuración que mejor salió en el backtest:
+- estrategia **`karen_pullback`**: score 10/10, retroceso a la EMA 9 de 1m, espera hasta 30 min, stop en el mínimo del retroceso, objetivo 2R;
+- **salida por los niveles del ETF** (`--exit-mode underlying`): stop y objetivo en el precio de SPY o QQQ, igual que en el backtest. El stop de -25% sobre la prima queda solo como red de seguridad;
+- opción **ITM** con al menos **1 día al vencimiento** (`--dte 1`) y **delta ~0.65** (`--delta 0.65`);
+- **contratos según tu riesgo:** se compran los necesarios para que, si el ETF toca el stop, pierdas cerca de `RISK_PER_TRADE_PCT` de la cuenta (delta × distancia al stop + spread);
+- **tope de seguridad:** nunca se gasta en primas más de `MAX_POSITION_PCT` (30%) de la cuenta en un trade;
+- busca entrada hasta las 12:00 ET.
+
+Para usar en cambio el stop sobre la prima y los escalones: `--exit-mode premium --stop-pct 25 --tiers 25:50,50:50`.
 
 Ejemplos de escalones:
 - `--tiers 20:50,40:25,80:25`: 50% en +20%, 25% en +40% y 25% en +80%.

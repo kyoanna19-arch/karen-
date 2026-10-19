@@ -34,6 +34,7 @@ class Settings:
     account_size: float
     risk_per_trade_pct: float
     option_stop_pct: float
+    max_position_pct: float = 30.0  # máximo de la cuenta gastado en primas en un solo trade
 
     @property
     def tradier_base_url(self) -> str:
@@ -58,4 +59,5 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         account_size=float(os.environ.get("ACCOUNT_SIZE", "8000")),
         risk_per_trade_pct=float(os.environ.get("RISK_PER_TRADE_PCT", "1.0")),
         option_stop_pct=float(os.environ.get("OPTION_STOP_PCT", "25")),
+        max_position_pct=float(os.environ.get("MAX_POSITION_PCT", "30")),
     )

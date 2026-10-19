@@ -10,7 +10,8 @@ from market_signals.ibkr import IBKRError, bars_to_frame, check_paper, round_tic
 from market_signals.paper import PaperTrader, journal_summary
 from market_signals.synthetic import synthetic_bars
 
-SETTINGS = Settings("t", "sandbox", "", "", "", 8000, 1.0, 30)
+SETTINGS = Settings("t", "sandbox", "", "", "", 8000, 1.0, 30)            # modo prima (escalones)
+SETTINGS_LEVELS = Settings("t", "sandbox", "", "", "", 100000, 1.0, 30)   # modo niveles: siempre alcanza
 
 
 class Clock:
@@ -106,7 +107,8 @@ def run_day(contexts, i, tmp_path, stop_hits=False, strategy="orb", params=None,
     ctx, feed = day_setup(contexts, i)
     broker = FakeBroker(feed, stop_hits, price_stops=plan is not None)
     clock = Clock(datetime.combine(ctx.day, datetime.min.time()).replace(hour=9, minute=30, second=5))
-    trader = PaperTrader(feed, broker, SETTINGS, lambda m: None, "SPY", strategy, params or {},
+    settings = SETTINGS if plan is not None else SETTINGS_LEVELS
+    trader = PaperTrader(feed, broker, settings, lambda m: None, "SPY", strategy, params or {},
                          now=clock.now, sleep=clock.sleep, poll_seconds=60, journal=tmp_path / "j.csv",
                          exit_plan=plan)
     return ctx, broker, trader.run()
@@ -132,18 +134,32 @@ def test_paper_matches_backtest_exit_reasons(contexts, tmp_path):
     assert compared >= 10
 
 
-def test_position_size_and_protective_stop(contexts, tmp_path):
-    _, broker, trade = run_day(contexts, 0, tmp_path)
-    # $8000 x 1% = $80; prima $1.20 x 100 x 30% = $36 -> 2 contratos; stop en $0.84
-    assert broker.orders[0] == ("BUY", "SPY-OPT", 2, 1.20)
-    assert broker.orders[1] == ("STOP", "SPY-OPT", 2, 0.84)
-    assert trade.qty == 2
+def test_position_size_by_etf_stop_and_cash_cap(contexts, tmp_path):
+    ctx, feed = day_setup(contexts, 0)
+
+    def make(settings):
+        broker = FakeBroker(feed)
+        clock = Clock(datetime.combine(ctx.day, datetime.min.time()).replace(hour=9, minute=30, second=5))
+        trader = PaperTrader(feed, broker, settings, lambda m: None, "SPY", "orb", {}, now=clock.now,
+                             sleep=clock.sleep, poll_seconds=60, journal=tmp_path / "j.csv")
+        return trader, broker, trader.run()
+
+    trader, broker, trade = make(Settings("t", "sandbox", "", "", "", 8000, 5.0, 30))
+    risk_u = abs(trader.entry_price - trader.sig.stop)
+    loss_per_contract = (0.45 * risk_u + 0.02) * 100  # delta x distancia al stop + spread
+    expected = min(int(400 // loss_per_contract), int(8000 * 0.30 // 120))
+    assert trade.qty == expected and broker.orders[0] == ("BUY", "SPY-OPT", expected, 1.20)
+    assert broker.orders[1] == ("STOP", "SPY-OPT", expected, 0.84)  # red de seguridad: -30% de la prima
+
+    # cuenta chica: el tope de 30% manda (30% de $500 = $150 -> 1 contrato de $120)
+    _, _, small = make(Settings("t", "sandbox", "", "", "", 500, 50.0, 30, 30.0))
+    assert small.qty == 1
 
 
 def test_protective_stop_fill_closes_trade_without_selling(contexts, tmp_path):
     _, broker, trade = run_day(contexts, 0, tmp_path, stop_hits=True)
     assert trade.exit_reason == "stop opción" and trade.option_exit == pytest.approx(0.84)
-    assert trade.pnl == pytest.approx((0.84 - 1.20) * 200)
+    assert trade.pnl == pytest.approx((0.84 - 1.20) * 100 * trade.qty)
     assert "SELL" not in [o[0] for o in broker.orders]
 
 

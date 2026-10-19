@@ -164,11 +164,21 @@ class PaperTrader:
             self.notify(f"PAPER {self.symbol}: señal {side} pero sin contrato con spread aceptable. No entro.")
             return False
         stop_pct = self.plan.stop_pct * 100 if self.plan else self.settings.option_stop_pct
-        qty = contracts_for_risk(self.settings.account_size, self.settings.risk_per_trade_pct, option["ask"],
-                                 stop_pct)
+        if self.plan:
+            qty = contracts_for_risk(self.settings.account_size, self.settings.risk_per_trade_pct, option["ask"],
+                                     stop_pct)
+        else:
+            # salida por niveles del ETF: se pierde aprox. delta x distancia al stop (+ el spread)
+            delta = abs((option.get("greeks") or {}).get("delta") or self.target_delta)
+            loss_per_contract = (delta * risk + max(option["ask"] - option.get("bid", 0), 0)) * 100
+            risk_dollars = self.settings.account_size * self.settings.risk_per_trade_pct / 100
+            qty = int(risk_dollars // loss_per_contract) if loss_per_contract > 0 else 0
+        max_by_cash = int(self.settings.account_size * self.settings.max_position_pct / 100 // (option["ask"] * 100))
+        qty = min(qty, max_by_cash)
         if qty == 0:
             self.notify(f"PAPER {self.symbol}: señal {side} pero la prima ({option['ask']}) es muy cara "
-                        "para tu riesgo por trade. No entro.")
+                        f"para tu riesgo por trade o pasa del {self.settings.max_position_pct:.0f}% de la cuenta. "
+                        "No entro.")
             return False
         filled = self.broker.buy(option, qty, option["ask"])
         if filled is None:

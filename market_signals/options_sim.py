@@ -6,6 +6,9 @@ para scalping: delta, gamma y la pérdida por tiempo (theta), que en 0DTE es muy
 Es una aproximación: la volatilidad implícita real cambia durante el día. Por eso se puede
 probar con distintas volatilidades (`iv`) para ver qué tan sensibles son los resultados.
 
+Costos: `slip` es lo que se pierde por lado en dólares por acción (0.02 = 2 centavos):
+medio spread + deslizamiento. Se paga al comprar y al vender.
+
 Unidades: la ganancia de cada trade se expresa en R, donde 1R = el stop. Con un stop de 25%,
 perder el 25% de la prima es -1R y ganar 50% es +2R.
 """
@@ -116,6 +119,11 @@ def _prices(ctx: DayContext, i: int, K: float, sigma: float, call: bool, dte: in
     return o, (lo if call else hi), (hi if call else lo)
 
 
+def _sell(price: float, slip: float) -> float:
+    """Precio al vender: el valor teórico menos el costo por lado (medio spread + deslizamiento)."""
+    return max(price - slip, 0.0)
+
+
 def _entry(ctx: DayContext, sig: Signal, iv: float, delta: float, dte: int, slip: float):
     e = sig.pos + 1
     if e >= len(ctx.o):
@@ -126,11 +134,11 @@ def _entry(ctx: DayContext, sig: Signal, iv: float, delta: float, dte: int, slip
     mid = (bs_call if call else bs_put)(S, K, years_left(ctx.times[e], dte), iv)
     if mid < 0.05:
         return None
-    return e, call, K, mid * (1 + slip)
+    return e, call, K, mid + slip
 
 
 def option_path(ctx: DayContext, sig: Signal, iv: float = 0.18, delta: float = 0.45, dte: int = 0,
-                slip: float = 0.01, gains=(0.20, 0.25, 0.30, 0.50)) -> OptionPath | None:
+                slip: float = 0.02, gains=(0.20, 0.25, 0.30, 0.50)) -> OptionPath | None:
     start = _entry(ctx, sig, iv, delta, dte, slip)
     if start is None:
         return None
@@ -141,8 +149,8 @@ def option_path(ctx: DayContext, sig: Signal, iv: float = 0.18, delta: float = 0
         if i > e and ctx.times[i] >= sig.exit_by:
             break
         _, worst, hi = _prices(ctx, i, K, iv, call, dte)
-        worst_so_far = min(worst_so_far, worst * (1 - slip) / cost - 1)
-        gain = hi * (1 - slip) / cost - 1
+        worst_so_far = min(worst_so_far, _sell(worst, slip) / cost - 1)
+        gain = _sell(hi, slip) / cost - 1
         best = max(best, gain)
         for g in gains:
             if mae_before[g] is None and gain >= g:
@@ -151,7 +159,7 @@ def option_path(ctx: DayContext, sig: Signal, iv: float = 0.18, delta: float = 0
 
 
 def simulate_option(ctx: DayContext, sig: Signal, strategy: str, plan: ExitPlan, iv: float = 0.18,
-                    delta: float = 0.45, dte: int = 0, slip: float = 0.01) -> Trade | None:
+                    delta: float = 0.45, dte: int = 0, slip: float = 0.02) -> Trade | None:
     """Simula la opción con stop sobre la prima y salidas escalonadas. Devuelve un Trade en R (1R = stop)."""
     start = _entry(ctx, sig, iv, delta, dte, slip)
     if start is None:
@@ -166,21 +174,21 @@ def simulate_option(ctx: DayContext, sig: Signal, strategy: str, plan: ExitPlan,
     for i in range(e, len(ctx.o)):
         o, worst, best = _prices(ctx, i, K, iv, call, dte)
         if i > e and (ctx.times[i] >= sig.exit_by or (plan.max_minutes and i - e >= plan.max_minutes)):
-            pnl += remaining * (o * (1 - slip) / cost - 1)
+            pnl += remaining * (_sell(o, slip) / cost - 1)
             reasons.append("tiempo")
             remaining, exit_pos = 0.0, i
             break
-        if i > e and o * (1 - slip) <= stop:  # abrió por debajo del stop
-            pnl += remaining * (o * (1 - slip) / cost - 1)
+        if i > e and _sell(o, slip) <= stop:  # abrió por debajo del stop
+            pnl += remaining * (_sell(o, slip) / cost - 1)
             reasons.append("stop" if stop < cost else "breakeven")
             remaining, exit_pos = 0.0, i
             break
-        if worst * (1 - slip) <= stop:  # se revisa el stop antes que las ganancias (lo más conservador)
+        if _sell(worst, slip) <= stop:  # se revisa el stop antes que las ganancias (lo más conservador)
             pnl += remaining * (stop / cost - 1)
             reasons.append("stop" if stop < cost else "breakeven")
             remaining, exit_pos = 0.0, i
             break
-        while pending and best * (1 - slip) >= cost * (1 + pending[0][0]):
+        while pending and _sell(best, slip) >= cost * (1 + pending[0][0]):
             gain, frac = pending.pop(0)
             frac = min(frac, remaining)
             pnl += frac * gain
@@ -194,7 +202,7 @@ def simulate_option(ctx: DayContext, sig: Signal, strategy: str, plan: ExitPlan,
     else:
         last = len(ctx.o) - 1
         o_last = (bs_call if call else bs_put)(ctx.c[last], K, years_left(ctx.times[last], dte), iv)
-        pnl += remaining * (o_last * (1 - slip) / cost - 1)
+        pnl += remaining * (_sell(o_last, slip) / cost - 1)
         reasons.append("cierre")
 
     r = pnl / plan.stop_pct
@@ -202,6 +210,51 @@ def simulate_option(ctx: DayContext, sig: Signal, strategy: str, plan: ExitPlan,
                  entry=round(cost, 3), stop=round(cost * (1 - plan.stop_pct), 3), target=float(K),
                  exit_time=ctx.times[exit_pos], exit=round(cost * (1 + pnl), 3),
                  exit_reason=" / ".join(reasons), r=round(r, 3), r_net=round(r, 3),
+                 gap_pct=round(ctx.gap_pct, 3), note=sig.note, conditions=sig.conditions)
+
+
+def simulate_option_levels(ctx: DayContext, sig: Signal, strategy: str, iv: float = 0.18, delta: float = 0.45,
+                           dte: int = 0, slip: float = 0.02, max_minutes: int | None = None) -> Trade | None:
+    """La opción sale cuando el ETF toca el stop o el objetivo de la estrategia (o por tiempo),
+    igual que en el backtest normal. 1R = lo que pierde la opción si el ETF toca el stop."""
+    start = _entry(ctx, sig, iv, delta, dte, slip)
+    if start is None:
+        return None
+    e, call, K, cost = start
+    f = bs_call if call else bs_put
+    d = sig.direction
+    S0 = float(ctx.o[e])
+    risk_u = (S0 - sig.stop) * d
+    if risk_u <= 0:
+        return None
+    target_u = sig.target_price if sig.target_price is not None else S0 + d * (sig.target_r or 1.5) * risk_u
+    if (target_u - S0) * d <= 0:
+        return None
+    risk = cost - _sell(f(sig.stop, K, years_left(ctx.times[e], dte), iv), slip)  # pérdida si toca el stop ya
+    if risk <= 0:
+        return None
+    exit_price, exit_pos, reason = None, len(ctx.o) - 1, "cierre"
+    for i in range(e, len(ctx.o)):
+        T = years_left(ctx.times[i], dte)
+        if i > e and (ctx.times[i] >= sig.exit_by or (max_minutes and i - e >= max_minutes)):
+            exit_price, exit_pos, reason = f(ctx.o[i], K, T, iv), i, "tiempo"
+            break
+        worst, best = (ctx.l[i], ctx.h[i]) if d == 1 else (ctx.h[i], ctx.l[i])
+        if (worst - sig.stop) * d <= 0:
+            level = ctx.o[i] if i > e and (ctx.o[i] - sig.stop) * d <= 0 else sig.stop
+            exit_price, exit_pos, reason = f(level, K, T, iv), i, "stop"
+            break
+        if (best - target_u) * d >= 0:
+            exit_price, exit_pos, reason = f(target_u, K, T, iv), i, "objetivo"
+            break
+    if exit_price is None:
+        last = len(ctx.o) - 1
+        exit_price = f(ctx.c[last], K, years_left(ctx.times[last], dte), iv)
+    exit_price = _sell(exit_price, slip)
+    r = (exit_price - cost) / risk
+    return Trade(day=ctx.day, strategy=strategy, direction=d, entry_time=ctx.times[e], entry=round(cost, 3),
+                 stop=round(cost - risk, 3), target=float(K), exit_time=ctx.times[exit_pos],
+                 exit=round(exit_price, 3), exit_reason=reason, r=round(r, 3), r_net=round(r, 3),
                  gap_pct=round(ctx.gap_pct, 3), note=sig.note, conditions=sig.conditions)
 
 
@@ -214,9 +267,9 @@ def signals_for(contexts: list[DayContext], strategy_fn, params: dict) -> list[t
     return out
 
 
-def stop_study(pairs, iv: float = 0.18, slip: float = 0.01) -> dict:
+def stop_study(pairs, iv: float = 0.18, slip: float = 0.02, delta: float = 0.45, dte: int = 0) -> dict:
     """¿Qué tan profundo cae la opción antes de ganar? Sirve para elegir el stop."""
-    paths = [p for p in (option_path(ctx, sig, iv=iv, slip=slip) for ctx, sig in pairs) if p]
+    paths = [p for p in (option_path(ctx, sig, iv=iv, delta=delta, dte=dte, slip=slip) for ctx, sig in pairs) if p]
     rows = []
     for g in (0.20, 0.25, 0.30, 0.50):
         reached = [p.mae_before[g] for p in paths if p.mae_before[g] is not None]

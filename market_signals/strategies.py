@@ -435,8 +435,8 @@ def karen_setups(ctx: DayContext, min_score: int = 10, last_entry: str = "11:55"
     return ctx.cache[key]
 
 
-def karen_pullback(ctx: DayContext, min_score: int = 10, pullback_to: str = "ema9_1m", wait_minutes: int = 20,
-                   stop_mode: str = "pullback", target_r: float = 1.5, last_entry: str = "11:55",
+def karen_pullback(ctx: DayContext, min_score: int = 10, pullback_to: str = "ema9_1m", wait_minutes: int = 30,
+                   stop_mode: str = "pullback", target_r: float = 2.0, last_entry: str = "11:55",
                    exit_by: str = "12:15") -> Signal | None:
     """Estrategia de Karen con entrada en el RETROCESO, en vez de en la ruptura.
 
