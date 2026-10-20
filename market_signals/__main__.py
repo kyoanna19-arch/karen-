@@ -10,6 +10,7 @@ Comandos:
   swing       Prueba estrategias de swing (varios días) en velas diarias
   swing-portfolio  Simula el portafolio de swing con tu cuenta (varios activos, acciones enteras)
   swing-scan  Escáner diario: corre después del cierre, avisa y (opcional) manda órdenes a IBKR paper
+  signal-study  ¿Hacia dónde va el precio después de la señal, sin stop? (minutos a días)
   ibkr-test   Revisa la conexión con tu cuenta paper de Interactive Brokers
   paper       Opera la estrategia automáticamente en tu cuenta PAPER de IBKR
   paper-journal  Resumen de los trades hechos en paper
@@ -361,6 +362,38 @@ def cmd_swing_scan(args) -> None:
     notify("\n".join(lines))
 
 
+def cmd_signal_study(args) -> None:
+    from .signal_study import study
+    pd.set_option("display.width", 250)
+    pd.set_option("display.max_columns", 30)
+    symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
+    if args.strategy:
+        variants = [(args.strategy, parse_params(args.params))]
+    else:
+        variants = [("karen_score", {"min_score": 9}), ("karen_score", {"min_score": 10}), ("karen_pullback", {})]
+    for strategy, params in variants:
+        print(f"\n################ {strategy} {params or '(por defecto)'} ################")
+        per_symbol, pooled, missing = study(symbols, strategy, params)
+        if missing:
+            print(f"⚠️ Sin datos de 1 minuto: {', '.join(missing)}")
+        if pooled.empty:
+            print("Sin señales.")
+            continue
+        print("\n== Todos los activos juntos: movimiento promedio después de la señal vs. entrar al azar ==")
+        print(pooled.to_string(index=False))
+        print("\n== Ventaja por activo (señal menos azar, en %) ==")
+        print(per_symbol.to_string(index=False))
+    print("""
+Cómo leerlo:
+  señal_prom_%  = cuánto se movió el precio a favor (CALL) después de la señal, SIN stop
+  azar_prom_%   = lo mismo entrando cada 5 minutos al azar entre 9:35 y 11:55
+  ventaja_%     = señal menos azar. Es lo que aporta tu señal de verdad
+  t_señal       = qué tan seguro es que el promedio de la señal es distinto de cero (más de 2 = bastante)
+  activos_con_ventaja = en cuántos activos la señal le ganó al azar en ese plazo
+Para que valga la pena, la ventaja tiene que ser positiva en la mayoría de los activos
+y mayor que los costos (con opciones ITM, aprox. 0.02-0.05% en ETFs y 0.05-0.10% en acciones).""")
+
+
 def cmd_options_study(args) -> None:
     from . import options_sim as osim
     contexts = _load_contexts(args)
@@ -630,6 +663,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--execute", action="store_true", help="Mandar las órdenes a IBKR paper (MOO)")
     p.add_argument("--send", action="store_true", help="Enviar el resumen a Telegram")
     p.set_defaults(func=cmd_swing_scan)
+
+    p = sub.add_parser("signal-study", help="Medir la señal sin stop, de minutos a días")
+    p.add_argument("--symbols", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")
+    p.add_argument("--strategy", choices=list(STRATEGIES), help="Por defecto estudia 3 versiones de tu estrategia")
+    p.add_argument("--params", help="Parámetros de la estrategia")
+    p.set_defaults(func=cmd_signal_study)
 
     p = sub.add_parser("compare", help="Probar la misma estrategia en varios activos (una sola tabla)")
     p.add_argument("--symbols", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")
