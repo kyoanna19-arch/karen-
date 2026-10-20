@@ -8,6 +8,8 @@ Comandos:
   options-study  Estudia el stop sobre la prima y las salidas escalonadas
   daily-history  Descarga velas diarias de muchos años (Yahoo Finance, gratis)
   swing       Prueba estrategias de swing (varios días) en velas diarias
+  swing-portfolio  Simula el portafolio de swing con tu cuenta (varios activos, acciones enteras)
+  swing-scan  Escáner diario: corre después del cierre, avisa y (opcional) manda órdenes a IBKR paper
   ibkr-test   Revisa la conexión con tu cuenta paper de Interactive Brokers
   paper       Opera la estrategia automáticamente en tu cuenta PAPER de IBKR
   paper-journal  Resumen de los trades hechos en paper
@@ -243,6 +245,113 @@ Cómo leerlo:
 Una ventaja real debería ser positiva en varios activos y en las dos mitades.""")
 
 
+def _swing_cfg(args):
+    from .swing import SwingRule
+    from .swing_portfolio import PortfolioConfig
+    return PortfolioConfig(rule=SwingRule(args.rule, args.entry, args.exit, args.max_days),
+                           max_positions=args.max_positions, commission=args.commission, whole_shares=True)
+
+
+def cmd_swing_portfolio(args) -> None:
+    from dataclasses import replace
+    from . import swing_portfolio as sp
+    pd.set_option("display.width", 250)
+    pd.set_option("display.max_columns", 30)
+    symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
+    ind, missing = sp.load_indicators(symbols)
+    if missing:
+        print(f"⚠️ Sin datos (descárgalos con 'daily-history'): {', '.join(missing)}\n")
+    if not ind:
+        return
+    bench = ind.get("SPY")
+    cfg = _swing_cfg(args)
+    print(f"Activos: {', '.join(ind)} | cuenta ${args.account:,.0f} | comisión ${args.commission} por orden")
+    print(f"Regla: {cfg.rule.label()}\n")
+    print("== 1. ¿Cuántas posiciones a la vez? (acciones enteras, toda la historia) ==")
+    rows = []
+    for n in (1, 2, 3, 4):
+        c = replace(cfg, max_positions=n)
+        state, equity = sp.run_backtest(ind, c, args.account)
+        rows.append({"posiciones_máx": n, "$_por_espacio": round(args.account / n),
+                     **sp.portfolio_stats(state, equity, args.account, bench)})
+    print(pd.DataFrame(rows).to_string(index=False))
+    state, equity = sp.run_backtest(ind, cfg, args.account)
+    print(f"\n== 2. Año por año con {cfg.max_positions} posiciones ==")
+    print(sp.yearly_returns(equity).to_string())
+    by_sym = pd.DataFrame(state.closed).groupby("symbol").agg(trades=("ret", "size"), ganadores=("ret", lambda r: round((r > 0).mean(), 2)),
+                                                              prom_pct=("ret", lambda r: round(r.mean() * 100, 2)),
+                                                              ganancia_total=("pnl", "sum"))
+    print(f"\n== 3. Por activo ==\n{by_sym.round(2).to_string()}")
+    print("""
+Cómo leerlo:
+  CAGR_%       = rendimiento anual compuesto de la cuenta (con acciones enteras y comisiones)
+  caída_máx_%  = la peor caída de la cuenta desde un máximo
+  SPY_mantener = comparar contra comprar SPY y no vender nunca""")
+
+
+def cmd_swing_scan(args) -> None:
+    from datetime import date
+    from . import swing_portfolio as sp
+    from .swing import download_daily
+    settings = load_settings()
+    notify = Notifier(settings.telegram_bot_token, settings.telegram_chat_id, args.send)
+    symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
+    if not args.no_download:
+        for sym in symbols:
+            try:
+                download_daily(sym, start="2015-01-01")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  {sym}: no se pudo actualizar ({exc})")
+    ind, missing = sp.load_indicators(symbols)
+    if missing:
+        print(f"⚠️ Sin datos: {', '.join(missing)}")
+    cfg = _swing_cfg(args)
+    state_path = Path(args.state)
+    state = sp.load_state(state_path, args.account)
+    last_data = max(df.index[-1] for df in ind.values()).date()
+    if last_data < date.today() and date.today().weekday() < 5:
+        print(f"⚠️ El último dato es del {last_data}. Si hoy hubo mercado, corre esto después de las 4:15 pm ET.")
+    results = sp.scan(state, ind, cfg)
+    if len(results) > 1:
+        print(f"⚠️ Se procesaron {len(results)} días de una vez (¿no corriste el escáner algún día?). "
+              "Las órdenes de esos días se simularon, pero no se mandaron a IBKR.")
+    lines = [f"📈 SWING {state.last_date}"]
+    for res in results:
+        for f in res["filled"]:
+            if f["side"] == "BUY":
+                lines.append(f"✅ Compra ejecutada {res['date']}: {f['qty']:g} {f['symbol']} a ${f['price']}")
+            else:
+                lines.append(f"💵 Venta ejecutada {res['date']}: {f['qty']:g} {f['symbol']} a ${f['exit_price']} "
+                             f"({f['ret'] * 100:+.2f}%, ${f['pnl']:+,.2f})")
+        sp.append_journal([f for f in res["filled"] if f["side"] == "SELL"], Path(args.journal))
+    today_orders = results[-1]["orders"] if results else []
+    for o in today_orders:
+        verb = "COMPRAR" if o.side == "BUY" else "VENDER"
+        lines.append(f"➡️ Mañana en la apertura: {verb} {o.qty:g} {o.symbol}")
+    if not today_orders:
+        lines.append("Sin órdenes nuevas para mañana.")
+    last = pd.Timestamp(state.last_date)
+    for sym, pos in state.positions.items():
+        px = ind[sym].loc[:last, "close"].iloc[-1]
+        lines.append(f"📌 Tienes {pos.qty:g} {sym} desde {pos.entry_date} a ${pos.entry_price:.2f} "
+                     f"(hoy ${px:.2f}, {(px / pos.entry_price - 1) * 100:+.2f}%)")
+    lines.append(f"Capital: ${state.equity(ind, last):,.2f} (efectivo ${state.cash:,.2f})")
+    if args.execute and today_orders and len(results) == 1:
+        broker = _ibkr(client_id=9)
+        try:
+            for o in today_orders:
+                broker.place_moo(o.symbol, o.side, int(o.qty))
+                lines.append(f"🧪 Orden MOO enviada a IBKR paper: {o.side} {int(o.qty)} {o.symbol}")
+            ib_pos = broker.stock_positions()
+            mine = {k: v.qty for k, v in state.positions.items()}
+            if {k: v for k, v in ib_pos.items() if k in symbols} != mine:
+                lines.append(f"⚠️ IBKR tiene {ib_pos} y la bitácora local {mine}. Revisa en TWS.")
+        finally:
+            broker.disconnect()
+    sp.save_state(state, state_path)
+    notify("\n".join(lines))
+
+
 def cmd_options_study(args) -> None:
     from . import options_sim as osim
     contexts = _load_contexts(args)
@@ -476,7 +585,7 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_history)
 
     p = sub.add_parser("daily-history", help="Descargar velas diarias de muchos años (Yahoo Finance)")
-    p.add_argument("--symbol", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")
+    p.add_argument("--symbol", default="SPY,QQQ,IWM,DIA,NVDA,AAPL,META,TSLA,MSFT,AMD")
     p.add_argument("--start", default="2005-01-01")
     p.set_defaults(func=cmd_daily_history)
 
@@ -489,6 +598,29 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-trend", action="store_true", help="Quitar el filtro del promedio de 200 días")
     p.add_argument("--detail", default="SPY", help="Activo para ver variantes y año por año")
     p.set_defaults(func=cmd_swing)
+
+    def swing_args(p):
+        p.add_argument("--symbols", default="SPY,QQQ,IWM,DIA")
+        p.add_argument("--account", type=float, default=3000)
+        p.add_argument("--max-positions", type=int, default=2)
+        p.add_argument("--commission", type=float, default=1.0, help="Dólares por orden")
+        p.add_argument("--rule", choices=["rsi2", "down3", "ibs"], default="rsi2")
+        p.add_argument("--entry", type=float, default=10)
+        p.add_argument("--exit", choices=["sma5", "rsi70"], default="sma5")
+        p.add_argument("--max-days", type=int, default=10)
+
+    p = sub.add_parser("swing-portfolio", help="Simular el portafolio de swing con tu cuenta")
+    swing_args(p)
+    p.set_defaults(func=cmd_swing_portfolio)
+
+    p = sub.add_parser("swing-scan", help="Escáner diario de swing (correr después del cierre)")
+    swing_args(p)
+    p.add_argument("--state", default="data/swing_state.json", help="Archivo con tus posiciones simuladas")
+    p.add_argument("--journal", default="data/swing_journal.csv")
+    p.add_argument("--no-download", action="store_true", help="No actualizar datos de Yahoo")
+    p.add_argument("--execute", action="store_true", help="Mandar las órdenes a IBKR paper (MOO)")
+    p.add_argument("--send", action="store_true", help="Enviar el resumen a Telegram")
+    p.set_defaults(func=cmd_swing_scan)
 
     p = sub.add_parser("compare", help="Probar la misma estrategia en varios activos (una sola tabla)")
     p.add_argument("--symbols", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")

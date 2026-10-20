@@ -248,6 +248,21 @@ Regla por defecto (**RSI de 2 días**): compra cuando el RSI(2) cae debajo de 10
 
 ---
 
+### Portafolio y escáner diario (`swing-portfolio`, `swing-scan`)
+
+```bash
+python -m market_signals swing-portfolio                 # SPY, QQQ, IWM, DIA con $3,000 y 2 posiciones
+python -m market_signals swing-scan --send               # cada día después de las 4:15 pm ET
+python -m market_signals swing-scan --send --execute     # además manda órdenes MOO a IBKR paper
+```
+
+- La cuenta se divide en `--max-positions` espacios (por defecto 2, de $1,500 cada uno). Se compran **acciones enteras** y se cobra `--commission` ($1) por orden.
+- Si varios activos dan señal el mismo día, entra primero el de la caída más fuerte (RSI2 más bajo).
+- `swing-scan` usa **el mismo motor** que la simulación. Guarda tus posiciones en `data/swing_state.json` y los trades cerrados en `data/swing_journal.csv`. Con `--execute` deja órdenes **a mercado para la apertura (MOO)** en IBKR paper y avisa si IBKR y la bitácora no coinciden.
+- Córrelo **todos los días hábiles** después del cierre. Si te saltas días, los simula, pero esas órdenes no llegan a IBKR.
+
+---
+
 ## 5. Paper trading con Interactive Brokers
 
 El programa detecta la señal, compra la opción, pone el stop y las ventas escalonadas, y cierra lo que quede a la hora límite. **Solo funciona con cuentas paper:** si detecta una cuenta real o un puerto de cuenta real, se niega a operar.

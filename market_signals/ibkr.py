@@ -213,3 +213,17 @@ class IBKRBroker:
             sold_qty += left
             sold_value += left * float(trade.orderStatus.avgFillPrice)
         return sold_value / sold_qty
+
+    # ------------------------------------------------------------------ acciones (swing)
+    def stock_positions(self) -> dict[str, float]:
+        """Acciones que tiene la cuenta paper: {símbolo: cantidad}."""
+        return {p.contract.symbol: float(p.position) for p in self.ib.positions()
+                if p.contract.secType == "STK" and p.position}
+
+    def place_moo(self, symbol: str, side: str, qty: int):
+        """Orden a mercado para la APERTURA del siguiente día (MOO, tif='OPG')."""
+        from ib_async import MarketOrder
+        trade = self.ib.placeOrder(self._stock(symbol), MarketOrder(side, int(qty), tif="OPG"))
+        self.ib.sleep(1)
+        return trade
+
