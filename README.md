@@ -234,6 +234,20 @@ Usa una volatilidad típica para cada activo (por ejemplo 20% en QQQ y 58% en TS
 
 ---
 
+## 4c. Swing trading con velas diarias (`swing`)
+
+Trades de varios días en vez de minutos: el spread pesa mucho menos y no cuenta como day trade (no aplica la regla PDT).
+
+```bash
+pip install -r requirements.txt                     # instala yfinance (datos diarios gratis de Yahoo)
+python -m market_signals daily-history              # SPY, QQQ y las 6 acciones desde 2005
+python -m market_signals swing                      # regla por defecto en todos los activos
+```
+
+Regla por defecto (**RSI de 2 días**): compra cuando el RSI(2) cae debajo de 10 **y** el precio está sobre su promedio de 200 días; vende cuando el cierre supera el promedio de 5 días, o a los 10 días. Se compra y se vende en la apertura del día siguiente a la señal. El reporte muestra cada activo, variantes de la regla (para ver si es estable) y año por año, comparado contra comprar y mantener.
+
+---
+
 ## 5. Paper trading con Interactive Brokers
 
 El programa detecta la señal, compra la opción, pone el stop y las ventas escalonadas, y cierra lo que quede a la hora límite. **Solo funciona con cuentas paper:** si detecta una cuenta real o un puerto de cuenta real, se niega a operar.

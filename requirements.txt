@@ -3,3 +3,4 @@ pandas>=2.1
 numpy>=1.26
 pytest>=8.0
 ib_async>=2.0
+yfinance>=0.2

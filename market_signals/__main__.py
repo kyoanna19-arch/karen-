@@ -6,6 +6,8 @@ Comandos:
   download    Descarga barras de 1 minuto de Tradier a data/
   history     Descarga años de historial de 1 minuto desde Polygon.io
   options-study  Estudia el stop sobre la prima y las salidas escalonadas
+  daily-history  Descarga velas diarias de muchos años (Yahoo Finance, gratis)
+  swing       Prueba estrategias de swing (varios días) en velas diarias
   ibkr-test   Revisa la conexión con tu cuenta paper de Interactive Brokers
   paper       Opera la estrategia automáticamente en tu cuenta PAPER de IBKR
   paper-journal  Resumen de los trades hechos en paper
@@ -193,6 +195,52 @@ Una ventaja real debería salir positiva en VARIOS activos, no solo en uno.""")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     table.to_csv(out / "comparacion.csv", index=False)
+
+
+def cmd_daily_history(args) -> None:
+    from .swing import download_daily
+    for symbol in [x.strip().upper() for x in args.symbol.split(",") if x.strip()]:
+        try:
+            path = download_daily(symbol, start=args.start)
+            print(f"  {symbol}: listo ({path})")
+        except Exception as exc:  # noqa: BLE001 - mostrar el error y seguir con los demás
+            print(f"  {symbol}: error: {exc}")
+
+
+def cmd_swing(args) -> None:
+    from . import swing
+    pd.set_option("display.width", 250)
+    pd.set_option("display.max_columns", 30)
+    symbols = [x.strip().upper() for x in args.symbols.split(",") if x.strip()]
+    rule = swing.SwingRule(args.rule, args.entry, args.exit, args.max_days, not args.no_trend)
+    print(f"Regla: {rule.label()}")
+    print("Compra en la apertura siguiente a la señal y vende en la apertura siguiente a la salida.\n")
+    table, missing = swing.compare_symbols(symbols, rule)
+    if missing:
+        print(f"⚠️ Sin datos (descárgalos con 'daily-history'): {', '.join(missing)}\n")
+    if not table.empty:
+        print("== 1. La regla en cada activo ==")
+        print(table.to_string(index=False))
+    detail = args.detail.upper()
+    path = swing.daily_path(detail)
+    if path.exists():
+        df = swing.load_daily(path)
+        print(f"\n== 2. Variantes de la regla en {detail} (¿es estable o depende de un número exacto?) ==")
+        print(swing.grid_table(df, detail).to_string(index=False))
+        trades, _ = swing.backtest(df, rule, swing.cost_for(detail))
+        print(f"\n== 3. Año por año en {detail} ==")
+        print(swing.yearly(trades).to_string())
+        last = df["close"].iloc[-1]
+        print(f"\nCon $3,000 alcanzan {swing.shares_for(3000, last)} acciones de {detail} (a ${last:,.2f}).")
+    print("""
+Cómo leerlo:
+  prom_%            = ganancia promedio por trade (ya con costos)
+  CAGR_%            = rendimiento anual compuesto usando toda la cuenta en cada trade
+  caída_máx_%       = la peor caída de la cuenta desde un máximo
+  tiempo_invertido_% = qué parte del tiempo tuviste dinero en el mercado
+  comprar_y_mantener = comparar contra solo comprar y no vender nunca
+  prom_%_1a/2a_mitad = si funciona en la primera Y en la segunda mitad de los años, es más confiable
+Una ventaja real debería ser positiva en varios activos y en las dos mitades.""")
 
 
 def cmd_options_study(args) -> None:
@@ -426,6 +474,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--pause", type=float, default=12.5,
                    help="Segundos entre consultas (12.5 para el plan gratuito, 0 si pagas)")
     p.set_defaults(func=cmd_history)
+
+    p = sub.add_parser("daily-history", help="Descargar velas diarias de muchos años (Yahoo Finance)")
+    p.add_argument("--symbol", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")
+    p.add_argument("--start", default="2005-01-01")
+    p.set_defaults(func=cmd_daily_history)
+
+    p = sub.add_parser("swing", help="Probar estrategias de swing en velas diarias")
+    p.add_argument("--symbols", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")
+    p.add_argument("--rule", choices=["rsi2", "down3", "ibs"], default="rsi2")
+    p.add_argument("--entry", type=float, default=10, help="Nivel de entrada (RSI2 < 10, o IBS < 20)")
+    p.add_argument("--exit", choices=["sma5", "rsi70"], default="sma5")
+    p.add_argument("--max-days", type=int, default=10)
+    p.add_argument("--no-trend", action="store_true", help="Quitar el filtro del promedio de 200 días")
+    p.add_argument("--detail", default="SPY", help="Activo para ver variantes y año por año")
+    p.set_defaults(func=cmd_swing)
 
     p = sub.add_parser("compare", help="Probar la misma estrategia en varios activos (una sola tabla)")
     p.add_argument("--symbols", default="SPY,QQQ,NVDA,AAPL,META,TSLA,MSFT,AMD")
