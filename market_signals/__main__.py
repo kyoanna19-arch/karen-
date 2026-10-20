@@ -282,6 +282,15 @@ def cmd_swing_portfolio(args) -> None:
                                                               prom_pct=("ret", lambda r: round(r.mean() * 100, 2)),
                                                               ganancia_total=("pnl", "sum"))
     print(f"\n== 3. Por activo ==\n{by_sym.round(2).to_string()}")
+    table, monthly = sp.capital_table(ind, cfg)
+    print("\n== 4. ¿Cuánto capital necesitas? (misma estrategia, distintos montos) ==")
+    print(table.to_string(index=False))
+    if monthly > 0:
+        for goal in (1000, 2000):
+            print(f"Para ganar ${goal:,} al mes en promedio necesitarías unos ${goal / monthly:,.0f} de capital.")
+    else:
+        print("Con este rendimiento no hay capital que alcance: la estrategia no gana.")
+    print("Ojo: es un PROMEDIO. Habrá meses negativos (ver peor_mes_$) y caídas de la cuenta (peor_caída_$).")
     print("""
 Cómo leerlo:
   CAGR_%       = rendimiento anual compuesto de la cuenta (con acciones enteras y comisiones)

@@ -130,3 +130,11 @@ def test_cli_scan_sends_moo_orders_to_ibkr(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert sent and sent[0][0] == "SPY" and sent[0][1] == "BUY" and sent[0][2] >= 1
     assert "Orden MOO enviada a IBKR paper" in out and "Mañana en la apertura: COMPRAR" in out
+
+
+def test_capital_table(ind):
+    table, monthly = sp.capital_table(ind, sp.PortfolioConfig(), accounts=(3000, 100000))
+    assert list(table["capital_$"]) == [3000, 100000]
+    big = table.iloc[1]
+    assert big["ganancia_prom_mes_$"] == pytest.approx(100000 * monthly, abs=1)
+    assert big["peor_caída_$"] <= 0 and big["peor_mes_$"] <= big["ganancia_prom_mes_$"]

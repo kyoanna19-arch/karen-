@@ -237,3 +237,25 @@ def scan(state: PortfolioState, ind: dict[str, pd.DataFrame], cfg: PortfolioConf
     else:
         dates = [d for d in all_dates if d > pd.Timestamp(state.last_date)]
     return [step(state, d, ind, cfg) for d in dates]
+
+
+def capital_table(ind: dict[str, pd.DataFrame], cfg: PortfolioConfig,
+                  accounts=(3000, 10000, 25000, 50000, 100000)) -> tuple[pd.DataFrame, float]:
+    """¿Cuánto se gana al mes según el capital? Con acciones enteras y comisiones, las cuentas
+    pequeñas rinden un poco menos (sobra efectivo y la comisión pesa más)."""
+    rows, monthly_best = [], 0.0
+    for account in accounts:
+        state, equity = run_backtest(ind, cfg, account)
+        years = max((equity.index[-1] - equity.index[0]).days / 365.25, 1e-9)
+        cagr = (equity.iloc[-1] / account) ** (1 / years) - 1
+        monthly = (1 + cagr) ** (1 / 12) - 1
+        month_end = equity.groupby([equity.index.year, equity.index.month]).last()
+        month_ret = month_end.pct_change().dropna()
+        dd = float((equity / equity.cummax() - 1).min())
+        rows.append({"capital_$": account, "rend_anual_%": round(cagr * 100, 1),
+                     "ganancia_prom_mes_$": round(account * monthly),
+                     "peor_mes_$": round(account * float(month_ret.min())),
+                     "meses_negativos_%": round(float((month_ret < 0).mean()) * 100),
+                     "peor_caída_$": round(account * dd)})
+        monthly_best = monthly
+    return pd.DataFrame(rows), monthly_best
